@@ -3,7 +3,7 @@
 A bot that watches many networks, exchanges and token pairs **all the time** for price gaps. When it finds a gap that is profitable after all fees, it can borrow the money with a **flash loan**, do the trades, pay the loan back, and keep the profit. All of this happens in one transaction.
 
 - **Networks:** Base and Arbitrum (you can add more in `config/chains.js`)
-- **Exchanges:** Uniswap v2/v3, SushiSwap v2/v3, PancakeSwap v2/v3, Aerodrome, Aerodrome Slipstream, BaseSwap
+- **Exchanges:** Uniswap v2/v3, SushiSwap v2/v3, PancakeSwap v2/v3, Aerodrome, Aerodrome Slipstream (both factories), BaseSwap
 - **Flash loans:** **Morpho Blue (no fee)** when it holds enough of the token, otherwise **Aave v3 (0.05% fee)**. The bot picks the cheaper one for each trade.
 - **Trades:** every loop of 2 or 3 swaps that starts and ends with a token it can borrow (about 10,000 loops per block)
 
@@ -46,8 +46,9 @@ Each verified chance is printed with `*** OPPORTUNITY` and saved in `logs/opport
 ## Tests
 
 ```bash
-npm test          # math tests, offline
-npm run test:fork # contract + full bot on a local copy of Base (needs internet, ~10 min)
+npm test                      # math tests, offline
+npm run test:fork             # contract + full bot on a local copy of Base (needs internet, ~4 min)
+node scripts/check-quotes.js  # live check: quotes match real trades, and no false "no liquidity" results
 ```
 
 The fork test creates a real price gap on a local copy of Base. It then checks that the bot finds the gap, checks it, trades it, and that the wallet gets the profit.
@@ -72,8 +73,12 @@ Safety limits (set them in `.env`):
 |---|---|---|
 | `MAX_GAS_USD_PER_TRADE` | 0.5 | Skips a trade if its gas costs more than this |
 | `MAX_GAS_USD_PER_DAY` | 5 | Stops trading for the day after this much gas |
-| `MAX_FAILS_IN_A_ROW` | 5 | Stops trading after this many failed trades in a row |
-| `MIN_PROFIT_SHARE` | 0.5 | The contract cancels the trade if it gets less than 50% of the expected profit |
+| `MAX_FAILS_IN_A_ROW` | 5 | Pauses trading after this many failed trades in a row |
+| `PAUSE_MIN_AFTER_FAILS` | 30 | How many minutes the pause lasts |
+| `MIN_PROFIT_SHARE` | 0.5 | The contract cancels the trade if it gets less than 50% of the expected profit. It also always requires enough profit to pay the gas. |
+| `TIP_PROFIT_SHARE` | 0.3 | Pays 30% of the expected profit as a priority fee (tip), so the trade lands early in the block. The tip stays within `MAX_GAS_USD_PER_TRADE`. |
+
+If the result of a sent trade is unknown (for example, the network link drops), the bot counts it as a failure and sends nothing more until it knows the result.
 
 The contract only lets **your wallet** start trades, and it sends the profit straight to your wallet. It holds no money between trades.
 

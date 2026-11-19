@@ -22,7 +22,7 @@ export function makeTransport(key, cfg) {
   // RPC_BASE / RPC_ARBITRUM (comma separated) go first, e.g. your Alchemy link.
   const extra = (process.env[`RPC_${key.toUpperCase()}`] || '').split(',').map((s) => s.trim()).filter(Boolean);
   const urls = [...extra, ...cfg.rpcs];
-  return fallback(urls.map((u) => http(u, { timeout: 15000, retryCount: 1 })), { retryCount: 2 });
+  return fallback(urls.map((u) => http(u, { timeout: 6000, retryCount: 1 })), { retryCount: 2 });
 }
 
 export function makeClient(key, cfg) {
@@ -94,18 +94,19 @@ export async function discoverPools(client, cfg, tokens) {
     pools.push({ address: getAddress(addr), ...meta[k] });
   });
 
-  // Aerodrome (solidly) fees come from the factory.
-  const sol = pools.filter((p) => p.kind === 'solidly');
-  const fees = await multi(client, sol.map((p) => ({ address: p.factory, abi: solidlyFactoryAbi, functionName: 'getFee', args: [p.address, p.stable] })));
-  sol.forEach((p, k) => { p.feeBps = fees[k] !== undefined ? Number(fees[k]) : 30; });
-
-  // Aerodrome CL fees can change, so read the current one (it is re-read every block too).
-  const cl = pools.filter((p) => p.kind === 'cl');
-  const clFees = await multi(client, cl.map((p) => ({ address: p.address, abi: v3PoolAbi, functionName: 'fee' })));
-  cl.forEach((p, k) => { p.fee = clFees[k] !== undefined ? Number(clFees[k]) : 3000; });
-
+  await refreshFees(client, pools);
   for (const p of pools) p.label = poolLabel(p);
   return pools;
+}
+
+/** Re-reads fees that can change: Aerodrome pool fees (from the factory) and Aerodrome CL fees. */
+export async function refreshFees(client, pools) {
+  const sol = pools.filter((p) => p.kind === 'solidly');
+  const fees = await multi(client, sol.map((p) => ({ address: p.factory, abi: solidlyFactoryAbi, functionName: 'getFee', args: [p.address, p.stable] })));
+  sol.forEach((p, k) => { p.feeBps = fees[k] !== undefined ? Number(fees[k]) : (p.feeBps ?? 30); });
+  const cl = pools.filter((p) => p.kind === 'cl');
+  const clFees = await multi(client, cl.map((p) => ({ address: p.address, abi: v3PoolAbi, functionName: 'fee' })));
+  cl.forEach((p, k) => { p.fee = clFees[k] !== undefined ? Number(clFees[k]) : (p.fee ?? 3000); });
 }
 
 /** Token balances held by each pool (used to estimate pool size). */
@@ -119,10 +120,10 @@ export async function loadBalances(client, pools) {
 }
 
 // Discovery is slow-ish, so keep the result on disk.
-const cacheDir = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..', 'cache');
+const defaultCacheDir = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..', 'cache');
 const configHash = (cfg) => crypto.createHash('sha1').update(JSON.stringify({ t: cfg.tokens, d: cfg.dexes })).digest('hex').slice(0, 12);
 
-export async function getPools(client, key, cfg, tokens, maxAgeHours) {
+export async function getPools(client, key, cfg, tokens, maxAgeHours, cacheDir = defaultCacheDir) {
   const file = path.join(cacheDir, `pools-${key}.json`);
   const hash = configHash(cfg);
   try {

@@ -32,10 +32,11 @@ export const CHAINS = {
       AERO: '0x940181a94A35A4569E4529A3CDfB74e38FD98631',
     },
     dexes: [
-      { name: 'UniswapV3', kind: 'v3', factory: '0x33128a8fC17869897dcE68Ed026d694621f6FDfD', feeTiers: [100, 500, 3000, 10000] },
+      { name: 'UniswapV3', kind: 'v3', factory: '0x33128a8fC17869897dcE68Ed026d694621f6FDfD', feeTiers: [100, 200, 300, 400, 500, 3000, 10000] },
       { name: 'SushiV3', kind: 'v3', factory: '0xc35DADB65012eC5796536bD9864eD8773aBc74C4', feeTiers: [100, 500, 3000, 10000] },
       { name: 'PancakeV3', kind: 'v3', factory: '0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865', feeTiers: [100, 500, 2500, 10000] },
-      { name: 'AerodromeCL', kind: 'cl', factory: '0x5e7BB104d84c7CB9B682AaC2F3d509f5F406809A', tickSpacings: [1, 50, 100, 200, 2000] },
+      { name: 'AerodromeCL', kind: 'cl', factory: '0x5e7BB104d84c7CB9B682AaC2F3d509f5F406809A', tickSpacings: [1, 10, 50, 100, 200, 2000] },
+      { name: 'AerodromeCL2', kind: 'cl', factory: '0xaDe65c38CD4849aDBA595a4323a8C7DdfE89716a', tickSpacings: [1, 10, 50, 100, 200, 2000] },
       { name: 'Aerodrome', kind: 'solidly', factory: '0x420DD381b31aEf6683db6B902084cB0FFECe40Da' },
       { name: 'UniswapV2', kind: 'v2', factory: '0x8909Dc15e40173Ff4699343b6eB8132c65e18eC6', feeBps: 30 },
       { name: 'SushiV2', kind: 'v2', factory: '0x71524B4f93c58fcbF659783284E38825f0622859', feeBps: 30 },

@@ -93,16 +93,31 @@ test('usdPrices derives prices from a $1 anchor and pool sizes', () => {
   close(poolTvlUsd(ps[0], tokens, prices), 4_000_000, 1e-9);
 });
 
-test('flash loan fee matches Aave rounding (half up)', () => {
+test('flash loan fee matches Aave rounding (up), as seen on-chain', () => {
   assert.equal(flashPremium(1_000_000n, 5), 500n);
-  assert.equal(flashPremium(1_000n, 5), 1n); // 0.5 rounds up
-  assert.equal(flashPremium(999n, 5), 0n); // 0.4995 rounds down
+  assert.equal(flashPremium(1_000_100n, 5), 501n); // on-chain: 501
+  assert.equal(flashPremium(999n, 5), 1n); // on-chain: 1
+});
+
+test('rankCycles keeps each loop once, even if it can start from several tokens', () => {
+  const states = new Map([
+    ['p0', { reserve0: 1000n, reserve1: 2000n }],
+    ['p1', { reserve0: 1000n, reserve1: 2200n }],
+    ['p2', { reserve0: 1000n, reserve1: 1000n }],
+    ['p3', { reserve0: 1000n, reserve1: 1000n }],
+  ]);
+  const rates = rateTable(pools, states);
+  const cycles = buildCycles(pools, [A, B], 2); // A->B->A and B->A->B are the same loop
+  const { candidates, positive } = rankCycles(cycles, rates, 0, 10);
+  assert.equal(positive, 2);
+  assert.equal(candidates.length, 1);
 });
 
 test('pickLender uses Morpho (no fee) when it has enough, else Aave, else nothing', () => {
+  // Aave fee rounds up, so even 960 units pays 1 unit at 5 bps.
   const lenders = { aavePremiumBps: 5, aave: new Map([['X', 10_000n], ['Y', 10_000n]]), morpho: new Map([['X', 1_000n]]) };
   assert.deepEqual(pickLender(lenders, 'X', 900n), { source: 'morpho', premium: 0n }); // <= 95% of 1000
-  assert.deepEqual(pickLender(lenders, 'X', 960n), { source: 'aave', premium: 0n }); // too big for Morpho; fee rounds to 0
+  assert.deepEqual(pickLender(lenders, 'X', 960n), { source: 'aave', premium: 1n }); // too big for Morpho
   assert.deepEqual(pickLender(lenders, 'X', 9_000n), { source: 'aave', premium: 5n });
   assert.equal(pickLender(lenders, 'X', 9_600n), null); // more than 95% of Aave
   assert.equal(pickLender(lenders, 'Z', 1n), null);

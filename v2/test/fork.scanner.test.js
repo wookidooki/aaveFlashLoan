@@ -16,7 +16,13 @@ import { ChainScanner } from '../src/scanner.js';
 import { loadArtifact, erc20Abi } from '../src/abis.js';
 import { hardhatTransport, HARDHAT_KEY_0, makeGap } from './helpers.js';
 
-const C = CHAINS.base;
+// Small config (3 tokens, 4 exchanges) so the local copy loads few pools and the test stays fast.
+const FULL = CHAINS.base;
+const C = {
+  ...FULL,
+  tokens: { WETH: FULL.tokens.WETH, USDC: FULL.tokens.USDC, cbBTC: FULL.tokens.cbBTC },
+  dexes: FULL.dexes.filter((d) => ['UniswapV2', 'UniswapV3', 'AerodromeCL', 'Aerodrome'].includes(d.name)),
+};
 const WETH = getAddress(C.tokens.WETH);
 const USDC = getAddress(C.tokens.USDC);
 
@@ -40,12 +46,12 @@ test('scanner finds, checks and trades a real gap on a Base copy', async () => {
 
   const logs = [];
   const logDir = fs.mkdtempSync(path.join(os.tmpdir(), 'arb-logs-'));
+  const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'arb-cache-'));
   const scanner = new ChainScanner(
     'base',
     C,
-    // Big pools only (>= $500k) to keep the test fast: each pool is loaded over the network.
-    { ...SETTINGS, live: true, discoveryMaxAgeHours: 1e6, minProfitUsd: 1, maxGasUsdPerTrade: 5, minPoolTvlUsd: 500_000 },
-    { client: pub, transport: hardhatTransport, logDir, log: (m) => { logs.push(m); console.log(`  | ${m}`); } },
+    { ...SETTINGS, live: true, minProfitUsd: 1, maxGasUsdPerTrade: 5, minPoolTvlUsd: 100_000 },
+    { client: pub, transport: hardhatTransport, logDir, cacheDir, log: (m) => { logs.push(m); console.log(`  | ${m}`); } },
   );
   await scanner.init();
   assert.ok(scanner.executor?.ready, `executor should be ready: ${scanner.executor?.why}`);

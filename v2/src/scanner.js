@@ -3,7 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { getAddress } from 'viem';
-import { makeClient, loadTokens, getPools, loadBalances, loadState, loadLenders } from './chain.js';
+import { makeClient, loadTokens, getPools, loadBalances, loadState, loadLenders, refreshFees } from './chain.js';
 import { rateTable, buildCycles, rankCycles, usdPrices, poolTvlUsd, pickLender, minPremiumBps, maxLoan } from './graph.js';
 import { routeHops, bestSizes, simulateArb, quoteErrors } from './quote.js';
 import { Executor } from './executor.js';
@@ -13,7 +13,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const pct = (x) => `${x >= 0 ? '+' : ''}${(x * 100).toFixed(3)}%`;
 
 export class ChainScanner {
-  /** opts (for tests): client, transport (for the wallet), logDir, log */
+  /** opts (for tests): client, transport (for the wallet), logDir, cacheDir, log */
   constructor(key, cfg, settings, opts = {}) {
     this.key = key;
     this.cfg = cfg;
@@ -45,7 +45,7 @@ export class ChainScanner {
     if (id !== this.cfg.id) throw new Error(`RPC is chain ${id}, expected ${this.cfg.id}`);
     this.tokens = await loadTokens(this.client, this.cfg);
     this.anchor = getAddress(this.cfg.tokens[this.cfg.usdAnchor]);
-    const { pools, cached } = await getPools(this.client, this.key, this.cfg, this.tokens, this.s.discoveryMaxAgeHours);
+    const { pools, cached } = await getPools(this.client, this.key, this.cfg, this.tokens, this.s.discoveryMaxAgeHours, this.opts.cacheDir);
     this.allPools = pools;
     this.log(`${pools.length} pools found on ${this.cfg.dexes.length} DEXs for ${this.tokens.size} tokens${cached ? ' (from cache)' : ''}`);
     await this.refresh();
@@ -57,8 +57,17 @@ export class ChainScanner {
     }
   }
 
-  /** Re-reads pool sizes and flash loan liquidity, then rebuilds the list of loops. */
+  /** Re-reads pools (new ones too, when the cache is old), fees, pool sizes and flash loan liquidity. */
   async refresh() {
+    if (this.lastRefresh) {
+      const { pools, cached } = await getPools(this.client, this.key, this.cfg, this.tokens, this.s.discoveryMaxAgeHours, this.opts.cacheDir);
+      if (!cached) {
+        this.allPools = pools;
+        this.log(`found pools again: ${pools.length}`);
+      } else {
+        await refreshFees(this.client, this.allPools);
+      }
+    }
     await loadBalances(this.client, this.allPools);
     this.lenders = await loadLenders(this.client, this.cfg, this.tokens);
     const block = await this.client.getBlockNumber();
@@ -163,8 +172,12 @@ export class ChainScanner {
       const size = Number(f.amount) / 10 ** t.decimals;
       this.log(`*** OPPORTUNITY block ${block}: borrow ${size.toPrecision(6)} ${t.symbol} from ${f.source === 'morpho' ? 'Morpho' : 'Aave'} | profit $${realUsd.toFixed(2)} - gas ~$${f.gasUsd.toFixed(3)} = $${netUsd.toFixed(2)} | ${route}`);
       this.record({ block: block.toString(), route, source: f.source, asset: t.symbol, amount: f.amount.toString(), size, profitUsd: realUsd, gasUsd: f.gasUsd, netUsd, gap: f.c.gap, hops: f.hops.map((h) => ({ ...h })) });
-      if (this.executor) await this.executor.tryTrade({ source: f.source, asset: f.asset, amount: f.amount, hops: f.hops, profitRaw: sim.profit, profitUsd: realUsd, ethUsd });
-      break; // one trade per block per chain
+      if (!this.executor) break; // watch only: report the best one per block
+      const sent = await this.executor.tryTrade({
+        source: f.source, asset: f.asset, amount: f.amount, hops: f.hops, profitRaw: sim.profit, profitUsd: realUsd,
+        ethUsd, assetUsd: this.prices.get(f.asset), decimals: t.decimals,
+      });
+      if (sent) break; // one trade per block per chain; if skipped, try the next one
     }
   }
 
@@ -196,22 +209,24 @@ export class ChainScanner {
       }
     }
     let lastStatus = Date.now();
-    let backoff = this.s.pollMs;
+    let backoff = 0;
     for (;;) {
+      const t0 = Date.now();
       try {
         if (Date.now() - this.lastRefresh > this.s.poolRefreshMin * 60000) await this.refresh();
         await this.tick();
-        backoff = this.s.pollMs;
+        backoff = 0;
       } catch (e) {
         this.stats.errors++;
         this.log(`error: ${(e.shortMessage || e.message).split('\n')[0]}`);
-        backoff = Math.min(backoff * 2, 60000); // slow down if the RPC is limiting us
+        backoff = Math.min(Math.max(backoff * 2, 1000), 15000); // slow down a bit if the RPC is limiting us
       }
       if (Date.now() - lastStatus > this.s.statusEverySec * 1000) {
         this.status();
         lastStatus = Date.now();
       }
-      await sleep(backoff);
+      // Check again pollMs after the START of this tick, so slow ticks do not add extra delay.
+      await sleep(Math.max(0, this.s.pollMs - (Date.now() - t0)) + backoff);
     }
   }
 }

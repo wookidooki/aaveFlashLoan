@@ -40,6 +40,10 @@ contract ArbQuoter {
     uint160 internal constant MIN_SQRT_RATIO_PLUS_ONE = 4295128740;
     uint160 internal constant MAX_SQRT_RATIO_MINUS_ONE = 1461446703485210103287273052203988822378723970341;
 
+    /// @notice The call ran out of gas. The scanner splits the work and asks again.
+    ///         (Without this, an out-of-gas swap would look like "no liquidity".)
+    error OutOfQuoteGas();
+
     /// @notice For each route i and each input amount j, returns the final output amount.
     ///         0 means the quote failed (no liquidity, partial fill, or pool error).
     function quote(Hop[][] calldata routes, uint256[][] calldata amounts)
@@ -77,15 +81,18 @@ contract ArbQuoter {
         }
 
         if (h.kind == 1) {
+            uint256 g0 = gasleft();
             try ISolidlyPoolQ(h.pool).getAmountOut(amountIn, h.tokenIn) returns (uint256 out) {
                 return out;
             } catch {
+                _checkGas(g0);
                 return 0;
             }
         }
 
         if (h.kind == 2) {
             if (amountIn > uint256(type(int256).max)) return 0;
+            uint256 g0 = gasleft();
             try IV3PoolQ(h.pool).swap(
                 address(this),
                 zeroForOne,
@@ -95,7 +102,10 @@ contract ArbQuoter {
             ) returns (int256, int256) {
                 return 0; // should never happen: the callback always reverts
             } catch (bytes memory reason) {
-                if (reason.length != 64) return 0;
+                if (reason.length != 64) {
+                    _checkGas(g0);
+                    return 0;
+                }
                 (int256 a0, int256 a1) = abi.decode(reason, (int256, int256));
                 int256 paid = zeroForOne ? a0 : a1;
                 int256 got = zeroForOne ? a1 : a0;
@@ -106,6 +116,13 @@ contract ArbQuoter {
         }
 
         return 0;
+    }
+
+    /// @dev A call that fails with very little gas left ran out of gas. When a call deeper inside
+    ///      the pool runs out, a bit more is left over (about 1/64 + 1/64^2...), so allow 1/16.
+    ///      A normal revert (no liquidity, price limit) uses far less gas than that.
+    function _checkGas(uint256 gasBefore) internal view {
+        if (gasleft() < gasBefore / 16) revert OutOfQuoteGas();
     }
 
     function uniswapV3SwapCallback(int256 amount0Delta, int256 amount1Delta, bytes calldata) external pure {

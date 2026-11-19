@@ -105,7 +105,28 @@ export function rankCycles(cycles, rates, premiumBps, limit) {
     if (gap > 0) out.push({ cycle: c, gap });
   }
   out.sort((a, b) => b.gap - a.gap);
-  return { candidates: out.slice(0, limit), bestGap: best, bestCycle, positive: out.length };
+  // The same loop appears once per start token (A->B->C->A, B->C->A->B, ...). Keep only the best one.
+  const seen = new Set();
+  const unique = [];
+  for (const x of out) {
+    const k = loopKey(x.cycle);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    unique.push(x);
+    if (unique.length >= limit) break;
+  }
+  return { candidates: unique, bestGap: best, bestCycle, positive: out.length };
+}
+
+/** Same key for every rotation of a loop. */
+export function loopKey(cycle) {
+  const parts = cycle.legs.map((l) => `${l.i}${l.zeroForOne ? '+' : '-'}`);
+  let best = null;
+  for (let r = 0; r < parts.length; r++) {
+    const k = [...parts.slice(r), ...parts.slice(0, r)].join(',');
+    if (best === null || k < best) best = k;
+  }
+  return best;
 }
 
 /** USD price per whole token, from pool prices. Starts from one $1 anchor token. */
@@ -146,8 +167,8 @@ export function poolTvlUsd(pool, tokens, prices) {
   return v(pool.token0, pool.bal0) + v(pool.token1, pool.bal1);
 }
 
-/** Aave v3 flash loan fee (percentMul rounds half up). */
-export const flashPremium = (amount, premiumBps) => (amount * BigInt(premiumBps) + 5000n) / 10000n;
+/** Aave v3 flash loan fee. Aave rounds it UP (checked on-chain on Base and Arbitrum). */
+export const flashPremium = (amount, premiumBps) => (amount * BigInt(premiumBps) + 9999n) / 10000n;
 
 // ---------------------------------------------------------------- flash loan sources
 // lenders = { aavePremiumBps, aave: Map(asset -> available), morpho: Map(asset -> available) }

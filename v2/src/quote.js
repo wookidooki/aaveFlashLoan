@@ -1,10 +1,11 @@
 // Exact quotes and full trade simulation, both free (eth_call with state override).
-import { encodeFunctionData, decodeFunctionResult, encodeDeployData, decodeErrorResult, getAddress } from 'viem';
+import { encodeFunctionData, decodeFunctionResult, encodeDeployData, decodeErrorResult, getAddress, toFunctionSelector } from 'viem';
 import { loadArtifact } from './abis.js';
 import { hop } from './routes.js';
 
 const ArbQuoter = loadArtifact('ArbQuoter');
 const FlashArb = loadArtifact('FlashArb');
+const OOG_SELECTOR = toFunctionSelector('OutOfQuoteGas()');
 
 // Dummy addresses used only inside eth_call. Nothing is deployed there.
 const QUOTER_AT = getAddress('0x00000000000000000000000000000000ab0e7e01');
@@ -18,22 +19,34 @@ export function routeHops(cycle, pools) {
   return cycle.legs.map((l) => hop(pools[l.i], l.tokenIn, l.tokenOut));
 }
 
-// Max swaps quoted in one eth_call. A big v3 swap that crosses many ticks can cost
-// ~500k gas, so 40 swaps stays under the 25M gas we ask for.
-const MAX_SWAPS_PER_CALL = 40;
+// Max swaps quoted in one eth_call. Most v3 quotes cost under 1M gas, but a big swap that
+// crosses many ticks can cost 5-15M. If a call runs out of gas anyway, it is split in half.
+const MAX_SWAPS_PER_CALL = 10;
 const QUOTE_GAS = 25_000_000n;
+const BIG_QUOTE_GAS = 45_000_000n; // one retry for a single very heavy swap
 
-async function quoteChunk(client, routes, amounts, blockNumber) {
+/** True if the call failed because it ran out of gas (then we split and retry). */
+function isOutOfGas(e) {
+  for (let c = e; c; c = c.cause) {
+    if (typeof c.data === 'string' && c.data.startsWith(OOG_SELECTOR)) return true;
+    if (/out of gas|gas required exceeds|OutOfQuoteGas/i.test(`${c.details ?? ''} ${c.shortMessage ?? ''} ${c.message ?? ''}`)) return true;
+  }
+  return false;
+}
+
+async function quoteChunk(client, routes, amounts, blockNumber, gas = QUOTE_GAS) {
   try {
     const { data } = await client.call({
       to: QUOTER_AT,
       data: encodeFunctionData({ abi: ArbQuoter.abi, functionName: 'quote', args: [routes, amounts] }),
       stateOverride: [{ address: QUOTER_AT, code: ArbQuoter.deployedBytecode }],
-      gas: QUOTE_GAS,
+      gas,
       blockNumber,
     });
     return decodeFunctionResult({ abi: ArbQuoter.abi, functionName: 'quote', data });
   } catch (e) {
+    // Network/RPC errors are real errors: let the scanner see them (it backs off).
+    if (!isOutOfGas(e)) throw e;
     // Too much work for one call: split it in half and try again.
     const swaps = routes.reduce((n, r, i) => n + r.length * amounts[i].length, 0);
     if (swaps > 1) {
@@ -54,8 +67,15 @@ async function quoteChunk(client, routes, amounts, blockNumber) {
         return [[...x[0], ...y[0]]];
       }
     }
+    // One route at one size: try once more with a bigger budget.
+    if (gas === QUOTE_GAS) {
+      try {
+        return await quoteChunk(client, routes, amounts, blockNumber, BIG_QUOTE_GAS);
+      } catch { /* the RPC may not allow that much gas */ }
+    }
+    // Still too heavy: treat it as not tradable.
     quoteErrors.count++;
-    quoteErrors.last = `${(e.shortMessage || e.message || '').split('\n')[0]} ${e.details ?? ''}`.slice(0, 160);
+    quoteErrors.last = 'one swap needs more gas than the quote budget';
     return amounts.map((x) => x.map(() => 0n));
   }
 }
@@ -145,7 +165,7 @@ export async function simulateArb(client, cfg, source, asset, amount, hops, bloc
       to: SIM_ARB_AT,
       data: encodeFunctionData({ abi: FlashArb.abi, functionName: startFn(source), args: [asset, amount, hops, 0n] }),
       stateOverride: [{ address: SIM_ARB_AT, code }],
-      gas: 8_000_000n,
+      gas: 30_000_000n,
       blockNumber,
     });
     const profit = decodeFunctionResult({ abi: FlashArb.abi, functionName: startFn(source), data });
