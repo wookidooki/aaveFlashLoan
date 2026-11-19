@@ -15,7 +15,7 @@ const scanners = SETTINGS.chains.map((key) => {
 
 process.on('SIGINT', () => {
   console.log('\nStopping. Summary:');
-  for (const s of scanners) if (s.aave) s.status();
+  for (const s of scanners) if (s.lenders) s.status();
   process.exit(0);
 });
 

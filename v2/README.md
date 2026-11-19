@@ -1,10 +1,11 @@
 # Flash Loan Arbitrage Bot (v2)
 
-A bot that watches many networks, exchanges and token pairs **all the time** for price gaps. When it finds a gap that is profitable after all fees, it can borrow the money with an **Aave v3 flash loan**, do the trades, pay the loan back, and keep the profit. All of this happens in one transaction.
+A bot that watches many networks, exchanges and token pairs **all the time** for price gaps. When it finds a gap that is profitable after all fees, it can borrow the money with a **flash loan**, do the trades, pay the loan back, and keep the profit. All of this happens in one transaction.
 
 - **Networks:** Base and Arbitrum (you can add more in `config/chains.js`)
 - **Exchanges:** Uniswap v2/v3, SushiSwap v2/v3, PancakeSwap v2/v3, Aerodrome, Aerodrome Slipstream, BaseSwap
-- **Trades:** every loop of 2 or 3 swaps that starts and ends with a token Aave can lend (about 10,000 loops per block)
+- **Flash loans:** **Morpho Blue (no fee)** when it holds enough of the token, otherwise **Aave v3 (0.05% fee)**. The bot picks the cheaper one for each trade.
+- **Trades:** every loop of 2 or 3 swaps that starts and ends with a token it can borrow (about 10,000 loops per block)
 
 ## Read this first
 
@@ -98,7 +99,7 @@ npm run verify-config # checks every address on-chain
 1. **Find pools:** for every token pair and exchange, ask the exchange's factory contract for its pools. The result is saved in `cache/`.
 2. **Cheap filter (every block):** read the price of every pool in one call. Then multiply the rates around each loop. If the result is not above 1 + fees, the loop can never make money, so it is skipped.
 3. **Exact quote:** price the best loops at several trade sizes with `contracts/ArbQuoter.sol`. This contract is never deployed. It runs inside a free `eth_call` with "state override".
-4. **Full check:** run the real `FlashArb` trade the same way, including the Aave flash loan, every swap and the repayment. Then subtract gas.
+4. **Full check:** run the real `FlashArb` trade the same way, including the flash loan (Morpho or Aave), every swap and the repayment. Then subtract gas.
 5. **Trade (live mode only):** simulate once more with your deployed contract, then send the transaction.
 
 ## Files

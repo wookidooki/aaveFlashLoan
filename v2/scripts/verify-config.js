@@ -26,6 +26,7 @@ for (const [key, c] of Object.entries(CHAINS)) {
   };
   await check('multicall3', c.multicall3);
   await check('aavePool', c.aavePool);
+  if (c.morpho) await check('morpho', c.morpho);
   for (const [sym, a] of Object.entries(c.tokens)) await check(sym, a);
   for (const d of c.dexes) {
     if (!(await check(d.name, d.factory))) continue;

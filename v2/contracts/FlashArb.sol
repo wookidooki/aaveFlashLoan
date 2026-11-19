@@ -2,14 +2,15 @@
 pragma solidity 0.8.28;
 
 /// @title FlashArb
-/// @notice Borrows one token with an Aave v3 flash loan, trades it through a route of
+/// @notice Borrows one token with a flash loan (Aave v3, or Morpho Blue with no fee),
+///         trades it through a route of
 ///         pools (Uniswap v2 style, Aerodrome/Solidly style, Uniswap v3 style), pays back
 ///         the loan + fee, and sends the profit to the owner.
 ///         If the route does not return loan + fee + minProfit, the whole transaction
 ///         reverts. You then lose only the gas fee.
-/// @dev    Only the owner can start a trade. Only the Aave pool can call executeOperation,
-///         and only for a loan this contract started. Only the pool being swapped on can
-///         call the v3 swap callback.
+/// @dev    Only the owner can start a trade. Only the Aave pool / Morpho can call the
+///         flash loan callbacks, and only for a loan this contract started. Only the pool
+///         being swapped on can call the v3 swap callback.
 
 interface IERC20 {
     function balanceOf(address) external view returns (uint256);
@@ -23,6 +24,10 @@ interface IAavePool {
         bytes calldata params,
         uint16 referralCode
     ) external;
+}
+
+interface IMorpho {
+    function flashLoan(address token, uint256 assets, bytes calldata data) external;
 }
 
 interface IV2Pair {
@@ -65,23 +70,28 @@ contract FlashArb {
     uint160 internal constant MIN_SQRT_RATIO_PLUS_ONE = 4295128740;
     uint160 internal constant MAX_SQRT_RATIO_MINUS_ONE = 1461446703485210103287273052203988822378723970341;
 
-    // Transient storage slot that holds the pool we expect a v3 callback from.
-    uint256 internal constant EXPECTED_POOL_SLOT = 0;
+    // Transient storage slots.
+    uint256 internal constant EXPECTED_POOL_SLOT = 0; // pool we expect a v3 callback from
+    uint256 internal constant MORPHO_LOAN_SLOT = 1; // 1 while our own Morpho flash loan runs
 
     address public immutable owner;
     IAavePool public immutable aavePool;
+    IMorpho public immutable morpho; // address(0) on chains without Morpho
 
     error NotOwner();
     error NotAavePool();
+    error NotMorpho();
+    error NoMorpho();
     error BadInitiator();
     error BadRoute();
     error BadCallback();
     error NotEnoughProfit(uint256 amountOut, uint256 needed);
     error TokenCallFailed();
 
-    constructor(address aavePool_) {
+    constructor(address aavePool_, address morpho_) {
         owner = msg.sender;
         aavePool = IAavePool(aavePool_);
+        morpho = IMorpho(morpho_);
     }
 
     modifier onlyOwner() {
@@ -99,6 +109,34 @@ contract FlashArb {
         aavePool.flashLoanSimple(address(this), asset, amount, abi.encode(hops, minProfit), 0);
         profit = IERC20(asset).balanceOf(address(this));
         _safeTransfer(asset, owner, profit);
+    }
+
+    /// @notice Same as startArb, but borrows from Morpho Blue (no flash loan fee).
+    function startArbMorpho(address asset, uint256 amount, Hop[] calldata hops, uint256 minProfit)
+        external
+        onlyOwner
+        returns (uint256 profit)
+    {
+        if (address(morpho) == address(0)) revert NoMorpho();
+        _tstore(MORPHO_LOAN_SLOT, 1);
+        morpho.flashLoan(asset, amount, abi.encode(asset, hops, minProfit));
+        _tstore(MORPHO_LOAN_SLOT, 0);
+        profit = IERC20(asset).balanceOf(address(this));
+        _safeTransfer(asset, owner, profit);
+    }
+
+    /// @notice Called by Morpho during the flash loan. Morpho then pulls back `assets`.
+    function onMorphoFlashLoan(uint256 assets, bytes calldata data) external {
+        if (msg.sender != address(morpho)) revert NotMorpho();
+        if (_tload(MORPHO_LOAN_SLOT) != 1) revert BadInitiator();
+
+        (address asset, Hop[] memory hops, uint256 minProfit) = abi.decode(data, (address, Hop[], uint256));
+        uint256 amountOut = _runRoute(asset, assets, hops);
+
+        uint256 needed = assets + minProfit;
+        if (amountOut < needed) revert NotEnoughProfit(amountOut, needed);
+
+        _safeApprove(asset, address(morpho), assets);
     }
 
     /// @notice Called by Aave during the flash loan.
@@ -138,10 +176,7 @@ contract FlashArb {
     }
 
     function _v3Callback(int256 amount0Delta, int256 amount1Delta, bytes calldata data) internal {
-        address expected;
-        assembly {
-            expected := tload(EXPECTED_POOL_SLOT)
-        }
+        address expected = address(uint160(_tload(EXPECTED_POOL_SLOT)));
         if (expected == address(0) || msg.sender != expected) revert BadCallback();
         address tokenIn = abi.decode(data, (address));
         uint256 pay = uint256(amount0Delta > 0 ? amount0Delta : amount1Delta);
@@ -164,7 +199,7 @@ contract FlashArb {
         bool zeroForOne = h.tokenIn < h.tokenOut;
 
         if (h.kind == KIND_V3) {
-            _setExpectedPool(h.pool);
+            _tstore(EXPECTED_POOL_SLOT, uint256(uint160(h.pool)));
             (int256 a0, int256 a1) = IV3Pool(h.pool).swap(
                 address(this),
                 zeroForOne,
@@ -172,7 +207,7 @@ contract FlashArb {
                 zeroForOne ? MIN_SQRT_RATIO_PLUS_ONE : MAX_SQRT_RATIO_MINUS_ONE,
                 abi.encode(h.tokenIn)
             );
-            _setExpectedPool(address(0));
+            _tstore(EXPECTED_POOL_SLOT, 0);
             amountOut = uint256(-(zeroForOne ? a1 : a0));
             return amountOut;
         }
@@ -194,9 +229,15 @@ contract FlashArb {
         IV2Pair(h.pool).swap(out0, out1, address(this), "");
     }
 
-    function _setExpectedPool(address pool) internal {
+    function _tstore(uint256 slot, uint256 value) internal {
         assembly {
-            tstore(EXPECTED_POOL_SLOT, pool)
+            tstore(slot, value)
+        }
+    }
+
+    function _tload(uint256 slot) internal view returns (uint256 value) {
+        assembly {
+            value := tload(slot)
         }
     }
 

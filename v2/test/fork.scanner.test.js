@@ -33,7 +33,7 @@ test('scanner finds, checks and trades a real gap on a Base copy', async () => {
   console.log(`gap made: dumped ${Number(gap.dump) / 1e18} WETH into Uniswap v2 WETH/USDC`);
 
   const FlashArb = loadArtifact('FlashArb');
-  const hash = await wallet.deployContract({ abi: FlashArb.abi, bytecode: FlashArb.bytecode, args: [C.aavePool] });
+  const hash = await wallet.deployContract({ abi: FlashArb.abi, bytecode: FlashArb.bytecode, args: [C.aavePool, C.morpho] });
   const contract = (await pub.waitForTransactionReceipt({ hash })).contractAddress;
   process.env.PRIVATE_KEY = HARDHAT_KEY_0;
   process.env.FLASH_ARB_BASE = contract;
@@ -50,7 +50,7 @@ test('scanner finds, checks and trades a real gap on a Base copy', async () => {
   await scanner.init();
   assert.ok(scanner.executor?.ready, `executor should be ready: ${scanner.executor?.why}`);
 
-  const assets = [...scanner.aave.available.keys()];
+  const assets = [...new Set([...scanner.lenders.aave.keys(), ...scanner.lenders.morpho.keys()])];
   const bal = (a) => pub.readContract({ address: a, abi: erc20Abi, functionName: 'balanceOf', args: [owner] });
   const before = await Promise.all(assets.map(bal));
 

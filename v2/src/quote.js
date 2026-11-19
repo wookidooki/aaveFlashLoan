@@ -2,7 +2,6 @@
 import { encodeFunctionData, decodeFunctionResult, encodeDeployData, decodeErrorResult, getAddress } from 'viem';
 import { loadArtifact } from './abis.js';
 import { hop } from './routes.js';
-import { flashPremium } from './graph.js';
 
 const ArbQuoter = loadArtifact('ArbQuoter');
 const FlashArb = loadArtifact('FlashArb');
@@ -78,20 +77,23 @@ export async function quoteRoutes(client, routes, amounts, blockNumber) {
   return (await Promise.all(jobs)).flat();
 }
 
-/** Finds the best trade size for each candidate loop: coarse grid, then a finer pass. */
-export async function bestSizes(client, items, premiumBps, blockNumber) {
-  // items: [{ hops, sizes: bigint[] }]
+/**
+ * Finds the best trade size for each candidate loop: coarse grid, then a finer pass.
+ * items: [{ hops, sizes: bigint[], feeFor(size) -> flash loan fee (bigint) or null if no lender }]
+ */
+export async function bestSizes(client, items, blockNumber) {
   const first = await quoteRoutes(client, items.map((x) => x.hops), items.map((x) => x.sizes), blockNumber);
-  const pick = (sizes, outs) => {
+  const pick = (item, sizes, outs) => {
     let best = { amount: 0n, out: 0n, profit: -1n, idx: -1 };
     sizes.forEach((s, j) => {
-      if (!outs[j]) return;
-      const p = outs[j] - s - flashPremium(s, premiumBps);
+      const fee = item.feeFor(s);
+      if (!outs[j] || fee === null) return;
+      const p = outs[j] - s - fee;
       if (p > best.profit) best = { amount: s, out: outs[j], profit: p, idx: j };
     });
     return best;
   };
-  const coarse = items.map((x, i) => pick(x.sizes, first[i]));
+  const coarse = items.map((x, i) => pick(x, x.sizes, first[i]));
 
   // Refine only loops that made money on the coarse grid.
   const refineIdx = coarse.map((b, i) => (b.profit > 0n ? i : -1)).filter((i) => i >= 0);
@@ -106,41 +108,47 @@ export async function bestSizes(client, items, premiumBps, blockNumber) {
   });
   const second = await quoteRoutes(client, refineIdx.map((i) => items[i].hops), refineSizes, blockNumber);
   refineIdx.forEach((i, k) => {
-    const b = pick(refineSizes[k], second[k]);
+    const b = pick(items[i], refineSizes[k], second[k]);
     if (b.profit > coarse[i].profit) coarse[i] = b;
   });
   return coarse;
 }
 
-let runtimeCache = new Map();
+const runtimeCache = new Map();
+const ZERO = '0x0000000000000000000000000000000000000000';
 
 /** FlashArb runtime code with owner = SIM_OWNER, made by a free eth_call of the constructor. */
-async function simRuntime(client, aavePool) {
-  if (runtimeCache.has(aavePool)) return runtimeCache.get(aavePool);
+async function simRuntime(client, cfg) {
+  const args = [cfg.aavePool, cfg.morpho ?? ZERO];
+  const k = args.join();
+  if (runtimeCache.has(k)) return runtimeCache.get(k);
   const { data } = await client.call({
     account: SIM_OWNER,
-    data: encodeDeployData({ abi: FlashArb.abi, bytecode: FlashArb.bytecode, args: [aavePool] }),
+    data: encodeDeployData({ abi: FlashArb.abi, bytecode: FlashArb.bytecode, args }),
   });
-  runtimeCache.set(aavePool, data);
+  runtimeCache.set(k, data);
   return data;
 }
 
+/** FlashArb function to call for a flash loan source. */
+export const startFn = (source) => (source === 'morpho' ? 'startArbMorpho' : 'startArb');
+
 /**
- * Runs the whole trade (Aave flash loan + all swaps + repay) inside eth_call.
+ * Runs the whole trade (flash loan + all swaps + repay) inside eth_call.
  * This is the same code that would run on-chain. Returns { ok, profit, reason }.
  */
-export async function simulateArb(client, aavePool, asset, amount, hops, blockNumber) {
-  const code = await simRuntime(client, aavePool);
+export async function simulateArb(client, cfg, source, asset, amount, hops, blockNumber) {
+  const code = await simRuntime(client, cfg);
   try {
     const { data } = await client.call({
       account: SIM_OWNER,
       to: SIM_ARB_AT,
-      data: encodeFunctionData({ abi: FlashArb.abi, functionName: 'startArb', args: [asset, amount, hops, 0n] }),
+      data: encodeFunctionData({ abi: FlashArb.abi, functionName: startFn(source), args: [asset, amount, hops, 0n] }),
       stateOverride: [{ address: SIM_ARB_AT, code }],
       gas: 8_000_000n,
       blockNumber,
     });
-    const profit = decodeFunctionResult({ abi: FlashArb.abi, functionName: 'startArb', data });
+    const profit = decodeFunctionResult({ abi: FlashArb.abi, functionName: startFn(source), data });
     return { ok: true, profit };
   } catch (e) {
     return { ok: false, profit: 0n, reason: revertReason(e) };

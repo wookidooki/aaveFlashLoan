@@ -206,3 +206,15 @@ export async function loadAave(client, cfg, tokens) {
   ok.forEach((x, k) => available.set(x.asset, bals[k] ?? 0n));
   return { premiumBps: Number(premium), available };
 }
+
+/** All flash loan sources: Aave v3 (small fee) and Morpho Blue (no fee, lends what it holds). */
+export async function loadLenders(client, cfg, tokens) {
+  const aave = await loadAave(client, cfg, tokens);
+  const morpho = new Map();
+  if (cfg.morpho) {
+    const assets = [...tokens.keys()];
+    const bals = await multi(client, assets.map((a) => ({ address: a, abi: erc20Abi, functionName: 'balanceOf', args: [cfg.morpho] })));
+    assets.forEach((a, k) => { if (bals[k] > 0n) morpho.set(a, bals[k]); });
+  }
+  return { aavePremiumBps: aave.premiumBps, aave: aave.available, morpho };
+}

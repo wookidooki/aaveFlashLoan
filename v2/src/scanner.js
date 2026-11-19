@@ -3,8 +3,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { getAddress } from 'viem';
-import { makeClient, loadTokens, getPools, loadBalances, loadState, loadAave } from './chain.js';
-import { rateTable, buildCycles, rankCycles, usdPrices, poolTvlUsd } from './graph.js';
+import { makeClient, loadTokens, getPools, loadBalances, loadState, loadLenders } from './chain.js';
+import { rateTable, buildCycles, rankCycles, usdPrices, poolTvlUsd, pickLender, minPremiumBps, maxLoan } from './graph.js';
 import { routeHops, bestSizes, simulateArb, quoteErrors } from './quote.js';
 import { Executor } from './executor.js';
 
@@ -57,32 +57,40 @@ export class ChainScanner {
     }
   }
 
-  /** Re-reads pool sizes and Aave liquidity, then rebuilds the list of loops. */
+  /** Re-reads pool sizes and flash loan liquidity, then rebuilds the list of loops. */
   async refresh() {
     await loadBalances(this.client, this.allPools);
-    this.aave = await loadAave(this.client, this.cfg, this.tokens);
+    this.lenders = await loadLenders(this.client, this.cfg, this.tokens);
     const block = await this.client.getBlockNumber();
     const states = await loadState(this.client, this.allPools, block);
     this.prices = usdPrices(this.tokens, this.allPools, states, this.anchor);
     for (const p of this.allPools) p.tvlUsd = poolTvlUsd(p, this.tokens, this.prices);
+    // Ignore lenders that hold less than the smallest trade size (dust).
+    const minUsd = Math.min(...this.s.tradeSizesUsd);
+    for (const m of [this.lenders.morpho, this.lenders.aave]) {
+      for (const [a, v] of m) if (!this.prices.has(a) || this.usd(a, v) < minUsd) m.delete(a);
+    }
     this.pools = this.allPools.filter((p) => p.tvlUsd >= this.s.minPoolTvlUsd && states.has(p.address));
-    const starts = [...this.aave.available.entries()].filter(([a, v]) => v > 0n && this.prices.has(a)).map(([a]) => a);
+    const starts = [...this.tokens.keys()].filter((a) => maxLoan(this.lenders, a) > 0n && this.prices.has(a));
     this.cycles = buildCycles(this.pools, starts, this.s.maxHops);
     this.lastRefresh = Date.now();
+    const free = starts.filter((a) => minPremiumBps(this.lenders, a) === 0);
+    const paid = starts.filter((a) => minPremiumBps(this.lenders, a) > 0);
     this.log(
-      `${this.pools.length} pools >= $${this.s.minPoolTvlUsd.toLocaleString()} | Aave flash loan fee ${this.aave.premiumBps / 100}% | ` +
-        `can borrow: ${starts.map((a) => this.sym(a)).join(', ')} | ${this.cycles.length.toLocaleString()} loops to check`,
+      `${this.pools.length} pools >= $${this.s.minPoolTvlUsd.toLocaleString()} | ${this.cycles.length.toLocaleString()} loops to check | ` +
+        `borrow with no fee (Morpho): ${free.map((a) => this.sym(a)).join(', ') || '-'} | ` +
+        `Aave only (${this.lenders.aavePremiumBps / 100}% fee): ${paid.map((a) => this.sym(a)).join(', ') || '-'}`,
     );
   }
 
   sizesFor(asset) {
     const price = this.prices.get(asset);
     const t = this.tokens.get(asset);
-    const avail = this.aave.available.get(asset) ?? 0n;
+    const cap = maxLoan(this.lenders, asset);
     if (!price || !t) return [];
     return this.s.tradeSizesUsd
       .map((usd) => BigInt(Math.floor((usd / price) * 10 ** t.decimals)))
-      .filter((x) => x > 0n && x < (avail * 95n) / 100n);
+      .filter((x) => x > 0n && x <= cap);
   }
 
   usd(asset, raw) {
@@ -98,7 +106,7 @@ export class ChainScanner {
     const [states, gasPrice] = await Promise.all([loadState(this.client, this.pools, block), this.client.getGasPrice()]);
     const rates = rateTable(this.pools, states);
     this.prices = usdPrices(this.tokens, this.pools, states, this.anchor);
-    const { candidates, bestGap, bestCycle, positive } = rankCycles(this.cycles, rates, this.aave.premiumBps, this.s.topCandidates);
+    const { candidates, bestGap, bestCycle, positive } = rankCycles(this.cycles, rates, (a) => minPremiumBps(this.lenders, a), this.s.topCandidates);
 
     this.stats.checks++;
     this.stats.positive += positive;
@@ -116,11 +124,16 @@ export class ChainScanner {
   async checkCandidates(candidates, block, gasPrice) {
     const ethUsd = this.prices.get(getAddress(this.cfg.nativeWrapped)) ?? 0;
     const items = candidates
-      .map((c) => ({ c, hops: routeHops(c.cycle, this.pools), sizes: this.sizesFor(c.cycle.start) }))
+      .map((c) => ({
+        c,
+        hops: routeHops(c.cycle, this.pools),
+        sizes: this.sizesFor(c.cycle.start),
+        feeFor: (size) => pickLender(this.lenders, c.cycle.start, size)?.premium ?? null,
+      }))
       .filter((x) => x.sizes.length);
     if (!items.length) return;
 
-    const best = await bestSizes(this.client, items, this.aave.premiumBps, block);
+    const best = await bestSizes(this.client, items, block);
     const found = [];
     items.forEach((x, i) => {
       const b = best[i];
@@ -128,14 +141,15 @@ export class ChainScanner {
       const asset = x.c.cycle.start;
       const gasUsd = ((this.cfg.gas.base + this.cfg.gas.perHop * x.hops.length) * Number(gasPrice) / 1e18) * ethUsd + this.cfg.gas.l1FeeUsd;
       const profitUsd = this.usd(asset, b.profit);
-      found.push({ ...x, asset, amount: b.amount, profitRaw: b.profit, profitUsd, gasUsd, netUsd: profitUsd - gasUsd });
+      const { source } = pickLender(this.lenders, asset, b.amount);
+      found.push({ ...x, asset, source, amount: b.amount, profitRaw: b.profit, profitUsd, gasUsd, netUsd: profitUsd - gasUsd });
     });
     const profitable = found.filter((f) => f.netUsd >= this.s.minProfitUsd).sort((a, b) => b.netUsd - a.netUsd);
     this.stats.quotedProfitable += profitable.length;
 
     // Full simulation of the real trade (flash loan + swaps + repay) for the best few.
     for (const f of profitable.slice(0, 3)) {
-      const sim = await simulateArb(this.client, this.cfg.aavePool, f.asset, f.amount, f.hops, block);
+      const sim = await simulateArb(this.client, this.cfg, f.source, f.asset, f.amount, f.hops, block);
       const route = this.describe(f.c.cycle);
       if (!sim.ok) {
         this.log(`quote said +$${f.netUsd.toFixed(2)} but full check failed (${sim.reason}): ${route}`);
@@ -147,9 +161,9 @@ export class ChainScanner {
       this.stats.verified++;
       const t = this.tokens.get(f.asset);
       const size = Number(f.amount) / 10 ** t.decimals;
-      this.log(`*** OPPORTUNITY block ${block}: borrow ${size.toPrecision(6)} ${t.symbol} | profit $${realUsd.toFixed(2)} - gas ~$${f.gasUsd.toFixed(3)} = $${netUsd.toFixed(2)} | ${route}`);
-      this.record({ block: block.toString(), route, asset: t.symbol, amount: f.amount.toString(), size, profitUsd: realUsd, gasUsd: f.gasUsd, netUsd, gap: f.c.gap, hops: f.hops.map((h) => ({ ...h })) });
-      if (this.executor) await this.executor.tryTrade({ asset: f.asset, amount: f.amount, hops: f.hops, profitRaw: sim.profit, profitUsd: realUsd, ethUsd });
+      this.log(`*** OPPORTUNITY block ${block}: borrow ${size.toPrecision(6)} ${t.symbol} from ${f.source === 'morpho' ? 'Morpho' : 'Aave'} | profit $${realUsd.toFixed(2)} - gas ~$${f.gasUsd.toFixed(3)} = $${netUsd.toFixed(2)} | ${route}`);
+      this.record({ block: block.toString(), route, source: f.source, asset: t.symbol, amount: f.amount.toString(), size, profitUsd: realUsd, gasUsd: f.gasUsd, netUsd, gap: f.c.gap, hops: f.hops.map((h) => ({ ...h })) });
+      if (this.executor) await this.executor.tryTrade({ source: f.source, asset: f.asset, amount: f.amount, hops: f.hops, profitRaw: sim.profit, profitUsd: realUsd, ethUsd });
       break; // one trade per block per chain
     }
   }

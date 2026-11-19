@@ -67,7 +67,7 @@ before(async () => {
   wallet = createWalletClient({ chain: base, account: owner, transport });
   strangerWallet = createWalletClient({ chain: base, account: stranger, transport });
 
-  flashArb = await deploy(FlashArb, [C.aavePool]);
+  flashArb = await deploy(FlashArb, [C.aavePool, C.morpho]);
   quoter = await deploy(ArbQuoter);
   premiumBps = BigInt(await pub.readContract({ address: C.aavePool, abi: aavePoolAbi, functionName: 'FLASHLOAN_PREMIUM_TOTAL' }));
 
@@ -133,6 +133,45 @@ test('works with a WETH loan too: WETH -> USDC on v3, USDC -> WETH on v2', async
   } finally {
     await testClient.revert({ id: snap });
   }
+});
+
+test('Morpho flash loan (no fee): profit equals quote minus nothing', async () => {
+  const snap = await testClient.snapshot();
+  try {
+    const route = [hop(pools.v2, USDC, WETH), hop(pools.v3, WETH, USDC)];
+    const amount = 20000n * 10n ** 6n;
+    const { result } = await pub.simulateContract({ address: quoter, abi: ArbQuoter.abi, functionName: 'quote', args: [[route], [[amount]]], account: owner });
+    const expected = result[0][0] - amount; // no flash loan fee
+    assert.ok(expected > 0n);
+    const before = await usdcBal(owner);
+    await send(wallet, { address: flashArb, abi: FlashArb.abi, functionName: 'startArbMorpho', args: [USDC, amount, route, 1n] });
+    const gained = (await usdcBal(owner)) - before;
+    console.log(`  morpho: real profit ${Number(gained) / 1e6} USDC (Aave would charge ${Number((amount * premiumBps + 5000n) / 10000n) / 1e6} USDC fee)`);
+    assert.equal(gained, expected);
+    assert.equal(await usdcBal(flashArb), 0n);
+  } finally {
+    await testClient.revert({ id: snap });
+  }
+});
+
+test('Morpho path: strangers cannot start it, and Morpho cannot call back unless we started the loan', async () => {
+  const route = [hop(pools.v2, USDC, WETH), hop(pools.v3, WETH, USDC)];
+  await assert.rejects(
+    pub.simulateContract({ address: flashArb, abi: FlashArb.abi, functionName: 'startArbMorpho', args: [USDC, 1000n, route, 0n], account: stranger }),
+    /NotOwner/,
+  );
+  await assert.rejects(
+    pub.simulateContract({ address: flashArb, abi: FlashArb.abi, functionName: 'onMorphoFlashLoan', args: [1n, '0x'], account: stranger }),
+    /NotMorpho/,
+  );
+  // Even the real Morpho address cannot call the callback outside our own loan.
+  await testClient.impersonateAccount({ address: C.morpho });
+  await testClient.setBalance({ address: C.morpho, value: parseEther('1') });
+  await assert.rejects(
+    pub.simulateContract({ address: flashArb, abi: FlashArb.abi, functionName: 'onMorphoFlashLoan', args: [1n, '0x'], account: getAddress(C.morpho) }),
+    /BadInitiator/,
+  );
+  await testClient.stopImpersonatingAccount({ address: C.morpho });
 });
 
 test('reverts when the trade is not profitable (only gas is lost)', async () => {

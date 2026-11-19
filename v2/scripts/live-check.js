@@ -1,5 +1,6 @@
 // Health check on live data: quotes one WETH/USDC loop per chain at 3 sizes and runs
-// the full flash loan trade inside eth_call. Expect small losses (fees) and NotEnoughProfit.
+// the full flash loan trade (Aave and Morpho) inside eth_call. Expect small losses (fees)
+// and NotEnoughProfit, which shows the whole flash loan path ran.
 // Run after the scanner has made its pool cache: node scripts/live-check.js
 import { getAddress } from 'viem';
 import { makeClient } from '../src/chain.js';
@@ -21,6 +22,8 @@ for (const key of ['base', 'arbitrum']) {
   const [outs] = await quoteRoutes(c, [route], [sizes], block);
   console.log(`${cfg.name}: USDC -> WETH [${a.label}] -> USDC [${b.label}]`);
   sizes.forEach((s, i) => console.log(`  in ${Number(s) / 1e6} USDC -> out ${Number(outs[i]) / 1e6} USDC (${((Number(outs[i]) / Number(s) - 1) * 100).toFixed(3)}%)`));
-  const sim = await simulateArb(c, cfg.aavePool, U, 1000n * 10n ** 6n, route, block);
-  console.log('  full trade check:', sim);
+  for (const source of ['aave', 'morpho']) {
+    const sim = await simulateArb(c, cfg, source, U, 1000n * 10n ** 6n, route, block);
+    console.log(`  full trade check with ${source} flash loan:`, sim);
+  }
 }

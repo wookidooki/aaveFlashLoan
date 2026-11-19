@@ -26,7 +26,7 @@ const FlashArb = loadArtifact('FlashArb');
 
 const bal = await client.getBalance({ address: account.address });
 console.log(`${cfg.name}: deploying from ${account.address} (balance ${Number(bal) / 1e18} ETH)`);
-const hash = await wallet.deployContract({ abi: FlashArb.abi, bytecode: FlashArb.bytecode, args: [cfg.aavePool] });
+const hash = await wallet.deployContract({ abi: FlashArb.abi, bytecode: FlashArb.bytecode, args: [cfg.aavePool, cfg.morpho ?? '0x0000000000000000000000000000000000000000'] });
 console.log(`tx ${hash}, waiting...`);
 const r = await client.waitForTransactionReceipt({ hash });
 if (r.status !== 'success') {

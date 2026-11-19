@@ -1,7 +1,7 @@
 // Offline unit tests for the fast-filter math. Run: npm test
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { edgeRates, midPrice, buildCycles, cycleGap, rankCycles, rateTable, usdPrices, poolTvlUsd, flashPremium } from '../src/graph.js';
+import { edgeRates, midPrice, buildCycles, cycleGap, rankCycles, rateTable, usdPrices, poolTvlUsd, flashPremium, pickLender, minPremiumBps, maxLoan } from '../src/graph.js';
 
 const close = (a, b, eps = 1e-12) => assert.ok(Math.abs(a - b) <= eps * Math.max(1, Math.abs(b)), `${a} != ${b}`);
 const Q96 = 2n ** 96n;
@@ -97,4 +97,30 @@ test('flash loan fee matches Aave rounding (half up)', () => {
   assert.equal(flashPremium(1_000_000n, 5), 500n);
   assert.equal(flashPremium(1_000n, 5), 1n); // 0.5 rounds up
   assert.equal(flashPremium(999n, 5), 0n); // 0.4995 rounds down
+});
+
+test('pickLender uses Morpho (no fee) when it has enough, else Aave, else nothing', () => {
+  const lenders = { aavePremiumBps: 5, aave: new Map([['X', 10_000n], ['Y', 10_000n]]), morpho: new Map([['X', 1_000n]]) };
+  assert.deepEqual(pickLender(lenders, 'X', 900n), { source: 'morpho', premium: 0n }); // <= 95% of 1000
+  assert.deepEqual(pickLender(lenders, 'X', 960n), { source: 'aave', premium: 0n }); // too big for Morpho; fee rounds to 0
+  assert.deepEqual(pickLender(lenders, 'X', 9_000n), { source: 'aave', premium: 5n });
+  assert.equal(pickLender(lenders, 'X', 9_600n), null); // more than 95% of Aave
+  assert.equal(pickLender(lenders, 'Z', 1n), null);
+  assert.equal(minPremiumBps(lenders, 'X'), 0);
+  assert.equal(minPremiumBps(lenders, 'Y'), 5);
+  assert.equal(minPremiumBps(lenders, 'Z'), Infinity);
+  assert.equal(maxLoan(lenders, 'X'), 9_500n);
+});
+
+test('rankCycles uses the fee of each start token', () => {
+  const states = new Map([
+    ['p0', { reserve0: 1000n, reserve1: 2000n }],
+    ['p1', { reserve0: 10000n, reserve1: 20127n }], // tiny gap: about +0.03% after swap fees
+    ['p2', { reserve0: 1000n, reserve1: 1000n }],
+    ['p3', { reserve0: 1000n, reserve1: 1000n }],
+  ]);
+  const rates = rateTable(pools, states);
+  const cycles = buildCycles(pools, [A], 2);
+  assert.equal(rankCycles(cycles, rates, () => 0, 10).candidates.length, 1); // no fee: profitable
+  assert.equal(rankCycles(cycles, rates, () => 5, 10).candidates.length, 0); // 0.05% fee kills it
 });

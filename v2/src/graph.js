@@ -90,13 +90,17 @@ export function cycleGap(cycle, rates, premiumBps) {
   return x * (1 - premiumBps / 10000) - 1;
 }
 
-/** Best loops first. Only loops with a positive gap after the flash fee. */
+/**
+ * Best loops first. Only loops with a positive gap after the flash fee.
+ * premiumBps: a number, or a function (startToken) => fee in bps for that token.
+ */
 export function rankCycles(cycles, rates, premiumBps, limit) {
   const out = [];
   let best = -Infinity;
   let bestCycle = null;
+  const feeOf = typeof premiumBps === 'function' ? premiumBps : () => premiumBps;
   for (const c of cycles) {
-    const gap = cycleGap(c, rates, premiumBps);
+    const gap = cycleGap(c, rates, feeOf(c.start));
     if (gap > best) { best = gap; bestCycle = c; }
     if (gap > 0) out.push({ cycle: c, gap });
   }
@@ -144,3 +148,29 @@ export function poolTvlUsd(pool, tokens, prices) {
 
 /** Aave v3 flash loan fee (percentMul rounds half up). */
 export const flashPremium = (amount, premiumBps) => (amount * BigInt(premiumBps) + 5000n) / 10000n;
+
+// ---------------------------------------------------------------- flash loan sources
+// lenders = { aavePremiumBps, aave: Map(asset -> available), morpho: Map(asset -> available) }
+// We never borrow more than 95% of what a lender holds.
+const usable = (x) => ((x ?? 0n) * 95n) / 100n;
+
+/** Cheapest source that can lend `amount`: Morpho (no fee) first, then Aave. null if none. */
+export function pickLender(lenders, asset, amount) {
+  if (amount <= usable(lenders.morpho.get(asset))) return { source: 'morpho', premium: 0n };
+  if (amount <= usable(lenders.aave.get(asset))) return { source: 'aave', premium: flashPremium(amount, lenders.aavePremiumBps) };
+  return null;
+}
+
+/** Lowest fee (bps) at which `asset` can be borrowed at all. Infinity if it cannot. */
+export function minPremiumBps(lenders, asset) {
+  if (usable(lenders.morpho.get(asset)) > 0n) return 0;
+  if (usable(lenders.aave.get(asset)) > 0n) return lenders.aavePremiumBps;
+  return Infinity;
+}
+
+/** Biggest loan of `asset` any source can give. */
+export function maxLoan(lenders, asset) {
+  const m = usable(lenders.morpho.get(asset));
+  const a = usable(lenders.aave.get(asset));
+  return m > a ? m : a;
+}

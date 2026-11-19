@@ -15,6 +15,7 @@ export const CHAINS = {
     rpcs: ['https://mainnet.base.org', 'https://base-rpc.publicnode.com'],
     multicall3: '0xcA11bde05977b3631167028862bE2a173976CA11',
     aavePool: '0xA238Dd80C259a72e81d7e4664a9801593F98d1c5',
+    morpho: '0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb', // Morpho Blue: flash loans with no fee
     nativeWrapped: '0x4200000000000000000000000000000000000006', // WETH, used to price gas
     usdAnchor: 'USDC', // token valued at $1; all other USD prices are derived from pools
     gas: { base: 160000, perHop: 110000, l1FeeUsd: 0.01 }, // rough gas use, for the profit filter only
@@ -49,6 +50,7 @@ export const CHAINS = {
     rpcs: ['https://arb1.arbitrum.io/rpc', 'https://arbitrum-one-rpc.publicnode.com'],
     multicall3: '0xcA11bde05977b3631167028862bE2a173976CA11',
     aavePool: '0x794a61358D6845594F94dc1DB02A252b5b4814aD',
+    morpho: '0x6c247b1F6182318877311737BaC0844bAa518F5e', // Morpho Blue
     nativeWrapped: '0x82aF49447D8a07e3bd95BD0d56f35241523fBab1',
     usdAnchor: 'USDC',
     gas: { base: 160000, perHop: 110000, l1FeeUsd: 0.01 },

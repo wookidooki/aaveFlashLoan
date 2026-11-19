@@ -5,7 +5,7 @@
 import { createWalletClient, encodeFunctionData, decodeFunctionResult, getAddress } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { loadArtifact } from './abis.js';
-import { revertReason } from './quote.js';
+import { revertReason, startFn } from './quote.js';
 import { makeTransport } from './chain.js';
 
 const FlashArb = loadArtifact('FlashArb');
@@ -45,7 +45,7 @@ export class Executor {
     }
   }
 
-  /** opp: { asset, amount, hops, profitRaw, profitUsd, ethUsd } */
+  /** opp: { source, asset, amount, hops, profitRaw, profitUsd, ethUsd } */
   async tryTrade(opp) {
     if (!this.ready || this.stopped || this.busy) return null;
     const today = new Date().toISOString().slice(0, 10);
@@ -56,13 +56,14 @@ export class Executor {
     try {
       const minProfit = BigInt(Math.floor(Number(opp.profitRaw) * this.s.minProfitShare));
       const args = [opp.asset, opp.amount, opp.hops, minProfit];
+      const fn = startFn(opp.source);
 
       // 1) Simulate with the real contract from your wallet.
       let gas;
       try {
-        const { data } = await this.client.call({ account: this.account, to: this.contract, data: encodeFunctionData({ abi: FlashArb.abi, functionName: 'startArb', args }) });
-        decodeFunctionResult({ abi: FlashArb.abi, functionName: 'startArb', data });
-        gas = await this.client.estimateContractGas({ account: this.account, address: this.contract, abi: FlashArb.abi, functionName: 'startArb', args });
+        const { data } = await this.client.call({ account: this.account, to: this.contract, data: encodeFunctionData({ abi: FlashArb.abi, functionName: fn, args }) });
+        decodeFunctionResult({ abi: FlashArb.abi, functionName: fn, data });
+        gas = await this.client.estimateContractGas({ account: this.account, address: this.contract, abi: FlashArb.abi, functionName: fn, args });
       } catch (e) {
         this.log(`live: simulation failed, not sending (${revertReason(e)})`);
         return null;
@@ -79,7 +80,7 @@ export class Executor {
 
       // 3) Send.
       const hash = await this.wallet.writeContract({
-        address: this.contract, abi: FlashArb.abi, functionName: 'startArb', args,
+        address: this.contract, abi: FlashArb.abi, functionName: fn, args,
         gas: (gas * 12n) / 10n, maxFeePerGas: fees.maxFeePerGas, maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
       });
       this.log(`live: sent ${hash}`);
