@@ -1,3 +1,5 @@
+> **New version:** see [`v2/`](v2/README.md). It is a multi-network, multi-exchange flash loan arbitrage bot (Aave v3, Base and Arbitrum). The code below is the original 2019 Kovan demo, kept for reference.
+
 ## Intro
 
 A bot that does arbitrage between two Uniswap exchanges using an [Aave Flashloan](https://developers.aave.com/#what-is-aave) as the capital for initial trade.

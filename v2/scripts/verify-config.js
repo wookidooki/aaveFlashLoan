@@ -1,7 +1,8 @@
 // Checks that every address in config/chains.js has contract code, and that
 // each DEX factory answers the call the scanner will use. Run: node scripts/verify-config.js
-import { createPublicClient, http, fallback, parseAbi, getAddress } from 'viem';
+import { parseAbi, getAddress } from 'viem';
 import { CHAINS } from '../config/chains.js';
+import { makeClient } from '../src/chain.js';
 
 const probe = {
   v2: parseAbi(['function allPairsLength() view returns (uint256)']),
@@ -13,7 +14,7 @@ const fn = { v2: 'allPairsLength', solidly: 'allPoolsLength', v3: 'owner', cl: '
 
 let bad = 0;
 for (const [key, c] of Object.entries(CHAINS)) {
-  const client = createPublicClient({ transport: fallback(c.rpcs.map((u) => http(u))) });
+  const client = makeClient(key, c);
   const id = await client.getChainId();
   console.log(`\n== ${c.name} (chain id ${id}${id !== c.id ? ' MISMATCH' : ''})`);
   const check = async (label, addr) => {

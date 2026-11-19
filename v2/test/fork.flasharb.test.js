@@ -7,33 +7,21 @@
 import { test, before } from 'node:test';
 import assert from 'node:assert/strict';
 import hre from 'hardhat';
-import { createPublicClient, createWalletClient, createTestClient, custom, parseEther, getAddress, zeroAddress } from 'viem';
+import { createPublicClient, createWalletClient, createTestClient, parseEther, getAddress, zeroAddress } from 'viem';
 import { base } from 'viem/chains';
 import { CHAINS } from '../config/chains.js';
 import {
   loadArtifact, erc20Abi, wethAbi, v2FactoryAbi, v3FactoryAbi, clFactoryAbi, solidlyFactoryAbi, v2PairAbi, aavePoolAbi,
 } from '../src/abis.js';
 import { hop } from '../src/routes.js';
+import { hardhatTransport } from './helpers.js';
 
 const C = CHAINS.base;
 const WETH = getAddress(C.tokens.WETH);
 const USDC = getAddress(C.tokens.USDC);
 const dex = (name) => C.dexes.find((d) => d.name === name);
 
-// Hardhat reports reverts without the JSON-RPC error code viem expects, so viem cannot
-// decode custom errors. Add code 3 ("execution reverted") so it can.
-const transport = custom({
-  async request(args) {
-    try {
-      return await hre.network.provider.request(args);
-    } catch (e) {
-      if (typeof e?.data === 'string' && e.data.startsWith('0x')) {
-        throw Object.assign(new Error(e.message), { code: 3, data: e.data });
-      }
-      throw e;
-    }
-  },
-});
+const transport = hardhatTransport;
 const pub = createPublicClient({ chain: base, transport });
 const testClient = createTestClient({ chain: base, transport, mode: 'hardhat' });
 let owner, stranger, wallet, strangerWallet;

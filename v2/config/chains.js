@@ -16,6 +16,8 @@ export const CHAINS = {
     multicall3: '0xcA11bde05977b3631167028862bE2a173976CA11',
     aavePool: '0xA238Dd80C259a72e81d7e4664a9801593F98d1c5',
     nativeWrapped: '0x4200000000000000000000000000000000000006', // WETH, used to price gas
+    usdAnchor: 'USDC', // token valued at $1; all other USD prices are derived from pools
+    gas: { base: 160000, perHop: 110000, l1FeeUsd: 0.01 }, // rough gas use, for the profit filter only
     tokens: {
       WETH: '0x4200000000000000000000000000000000000006',
       USDC: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
@@ -48,6 +50,8 @@ export const CHAINS = {
     multicall3: '0xcA11bde05977b3631167028862bE2a173976CA11',
     aavePool: '0x794a61358D6845594F94dc1DB02A252b5b4814aD',
     nativeWrapped: '0x82aF49447D8a07e3bd95BD0d56f35241523fBab1',
+    usdAnchor: 'USDC',
+    gas: { base: 160000, perHop: 110000, l1FeeUsd: 0.01 },
     tokens: {
       WETH: '0x82aF49447D8a07e3bd95BD0d56f35241523fBab1',
       USDC: '0xaf88d065e77c8cC2239327C5EDb3A432268e5831',
