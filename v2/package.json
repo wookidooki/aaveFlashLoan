@@ -1,0 +1,27 @@
+{
+  "name": "flash-arb-v2",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Multi-chain, multi-DEX flash loan arbitrage scanner and executor (Aave v3).",
+  "scripts": {
+    "compile": "node scripts/compile.js",
+    "verify-config": "NODE_USE_ENV_PROXY=1 node scripts/verify-config.js",
+    "scan": "node src/index.js",
+    "deploy": "node scripts/deploy.js",
+    "test": "node --test test/unit.*.test.js",
+    "test:fork": "node --test --test-concurrency=1 test/fork.*.test.js",
+    "postinstall": "node scripts/compile.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "dotenv": "^16.6.1",
+    "viem": "^2.58.2"
+  },
+  "devDependencies": {
+    "hardhat": "^2.29.2",
+    "solc": "^0.8.28"
+  }
+}
