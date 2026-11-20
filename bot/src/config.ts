@@ -2,11 +2,27 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { getAddress, type Address } from "viem";
 
+/** "injected": quote through the CLQuoter code injected by eth_call state override. */
+export type QuoterRef = Address | "injected";
+
 export type VenueConfig =
-  | { id: string; type: "v3"; callback: "uniswap" | "pancake"; factory: Address; quoter: Address; fees: number[] }
-  | { id: string; type: "slipstream"; callback: "uniswap"; factory: Address; quoter: Address; tickSpacings: number[] }
+  | { id: string; type: "v3"; callback: "uniswap" | "pancake"; factory: Address; quoter: QuoterRef; fees: number[] }
+  | { id: string; type: "slipstream"; callback: "uniswap"; factory: Address; quoter: QuoterRef; tickSpacings: number[] }
+  | { id: string; type: "algebra"; factory: Address }
   | { id: string; type: "v2"; factory: Address; feeBps: number }
-  | { id: string; type: "solidly"; factory: Address };
+  | { id: string; type: "solidly"; factory: Address }
+  | { id: string; type: "pair-getamountout"; factory: Address }
+  | {
+      id: string;
+      type: "v4";
+      poolManager: Address;
+      quoter: Address;
+      stateView: Address;
+      /** asset symbol standing in for native ETH (currency 0x0) */
+      nativeAs: string;
+      /** hookless (fee, tickSpacing) keys to check */
+      keys: [number, number][];
+    };
 
 export interface ChainConfig {
   name: string;
@@ -28,6 +44,8 @@ export interface GasModelConfig {
   perLegOverheadGas: number;
   v2SwapGas: number;
   solidlySwapGas: number;
+  /** WETH unwrap + wrap around a native-ETH v4 leg */
+  wrapGas: number;
 }
 
 export interface ScanConfig {
@@ -38,6 +56,12 @@ export interface ScanConfig {
   maxRoundTripLossBps: number;
   poolRefreshMinutes: number;
   bestRouteSimulationEveryCycles: number;
+  /** USD size of the per-pool marginal-rate probe used for the pruning bound */
+  probeUsd: number;
+  /** safety margin on the bound: routes within this many bps of covering the premium are quoted in full */
+  boundSlackBps: number;
+  /** always fully quote this many routes per chain (best marginal product), so reports keep real breakdowns */
+  fullQuoteTopRoutes: number;
   gasModel: GasModelConfig;
   chains: ChainConfig[];
 }
@@ -66,11 +90,11 @@ export function loadConfig(path = DEFAULT_CONFIG_PATH, onlyChains?: string[]): S
       gasToken: c.gasToken,
       assets,
       pairs: c.pairs,
-      venues: c.venues.map((v: any) => ({
-        ...v,
-        factory: getAddress(v.factory),
-        ...(v.quoter ? { quoter: getAddress(v.quoter) } : {}),
-      })),
+      venues: c.venues.map((v: any) => {
+        const addr = (x: string | undefined) => (x && x !== "injected" ? getAddress(x) : x);
+        if (v.type === "v4" && !assets[v.nativeAs]) throw new Error(`${name}: ${v.id} nativeAs ${v.nativeAs} missing from "assets"`);
+        return { ...v, factory: addr(v.factory), quoter: addr(v.quoter), poolManager: addr(v.poolManager), stateView: addr(v.stateView) };
+      }),
       unsupportedVenues: c.unsupportedVenues ?? [],
     });
   }

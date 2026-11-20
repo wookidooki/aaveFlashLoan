@@ -9,6 +9,7 @@ interface IERC20C {
 interface ISwapCallback {
     function uniswapV3SwapCallback(int256 amount0Delta, int256 amount1Delta, bytes calldata data) external;
     function pancakeV3SwapCallback(int256 amount0Delta, int256 amount1Delta, bytes calldata data) external;
+    function algebraSwapCallback(int256 amount0Delta, int256 amount1Delta, bytes calldata data) external;
 }
 
 /// @notice Callback-style pool for tests. Prices with a constant product over its balances and a
@@ -17,12 +18,13 @@ interface ISwapCallback {
 contract MockCLPool {
     address public immutable token0;
     address public immutable token1;
-    bool public immutable pancakeCallback;
+    /// 0 = uniswapV3SwapCallback, 1 = pancakeV3SwapCallback, 2 = algebraSwapCallback
+    uint8 public immutable callbackKind;
 
-    constructor(address _token0, address _token1, bool _pancakeCallback) {
+    constructor(address _token0, address _token1, uint8 _callbackKind) {
         token0 = _token0;
         token1 = _token1;
-        pancakeCallback = _pancakeCallback;
+        callbackKind = _callbackKind;
     }
 
     function quote(bool zeroForOne, uint256 amountIn) public view returns (uint256) {
@@ -44,7 +46,8 @@ contract MockCLPool {
         IERC20C(tOut).transfer(recipient, out);
         (amount0, amount1) = zeroForOne ? (int256(amountIn), -int256(out)) : (-int256(out), int256(amountIn));
         uint256 before = IERC20C(tIn).balanceOf(address(this));
-        if (pancakeCallback) ISwapCallback(msg.sender).pancakeV3SwapCallback(amount0, amount1, data);
+        if (callbackKind == 1) ISwapCallback(msg.sender).pancakeV3SwapCallback(amount0, amount1, data);
+        else if (callbackKind == 2) ISwapCallback(msg.sender).algebraSwapCallback(amount0, amount1, data);
         else ISwapCallback(msg.sender).uniswapV3SwapCallback(amount0, amount1, data);
         require(IERC20C(tIn).balanceOf(address(this)) >= before + amountIn, "IIA");
     }

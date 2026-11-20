@@ -1,9 +1,9 @@
 // Encoding/decoding for FlashArbReceiverV3 simulate(), shared by tests and the scanner.
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { decodeErrorResult, encodeFunctionData, type Abi, type Address, type Hex } from "viem";
+import { decodeErrorResult, encodeAbiParameters, encodeFunctionData, keccak256, type Abi, type Address, type Hex } from "viem";
 
-export const LEG_KIND = { clUniswapCallback: 0, clPancakeCallback: 1, v2: 2, solidly: 3 } as const;
+export const LEG_KIND = { clUniswapCallback: 0, clPancakeCallback: 1, v2: 2, solidly: 3, clAlgebra: 4, v4: 5 } as const;
 
 export interface LegArg {
   kind: number;
@@ -12,6 +12,8 @@ export interface LegArg {
   tokenOut: Address;
   feeBps: number;
   minOut: bigint;
+  /** abi.encode(PoolKey, weth) for Uniswap v4 legs; "0x" otherwise */
+  data: Hex;
 }
 
 const ARTIFACT = fileURLToPath(new URL("../../artifacts/contracts/live/FlashArbReceiverV3.sol/FlashArbReceiverV3.json", import.meta.url));
@@ -77,4 +79,59 @@ export function revertData(err: unknown): Hex | undefined {
     e = e.cause;
   }
   return undefined;
+}
+
+// ---------------------------------------------------------------- Uniswap v4 leg data
+
+export interface V4PoolKey {
+  currency0: Address;
+  currency1: Address;
+  fee: number;
+  tickSpacing: number;
+  hooks: Address;
+}
+
+const POOL_KEY_TUPLE = {
+  type: "tuple",
+  components: [
+    { name: "currency0", type: "address" },
+    { name: "currency1", type: "address" },
+    { name: "fee", type: "uint24" },
+    { name: "tickSpacing", type: "int24" },
+    { name: "hooks", type: "address" },
+  ],
+} as const;
+
+/** Leg.data for KIND_V4: abi.encode(PoolKey, weth). */
+export function encodeV4LegData(key: V4PoolKey, weth: Address): Hex {
+  return encodeAbiParameters([POOL_KEY_TUPLE, { type: "address" }], [key, weth]);
+}
+
+/** v4 PoolId = keccak256(abi.encode(PoolKey)). */
+export function v4PoolId(key: V4PoolKey): Hex {
+  return keccak256(encodeAbiParameters([POOL_KEY_TUPLE], [key]));
+}
+
+// ---------------------------------------------------------------- injected CL quoter
+
+const QUOTER_ARTIFACT = fileURLToPath(new URL("../../artifacts/contracts/live/CLQuoter.sol/CLQuoter.json", import.meta.url));
+let cachedQuoter: { abi: Abi; deployedBytecode: Hex } | undefined;
+export function clQuoterArtifact(): { abi: Abi; deployedBytecode: Hex } {
+  if (!cachedQuoter) {
+    if (!existsSync(QUOTER_ARTIFACT)) throw new Error("CLQuoter artifact missing: run `npm run compile` in bot/ first");
+    const j = JSON.parse(readFileSync(QUOTER_ARTIFACT, "utf8"));
+    cachedQuoter = { abi: j.abi, deployedBytecode: j.deployedBytecode };
+  }
+  return cachedQuoter;
+}
+
+const CAPPED_ARTIFACT = fileURLToPath(new URL("../../artifacts/contracts/live/CappedMulticall.sol/CappedMulticall.json", import.meta.url));
+let cachedCapped: { abi: Abi; deployedBytecode: Hex } | undefined;
+export function cappedMulticallArtifact(): { abi: Abi; deployedBytecode: Hex } {
+  if (!cachedCapped) {
+    if (!existsSync(CAPPED_ARTIFACT)) throw new Error("CappedMulticall artifact missing: run `npm run compile` in bot/ first");
+    const j = JSON.parse(readFileSync(CAPPED_ARTIFACT, "utf8"));
+    cachedCapped = { abi: j.abi, deployedBytecode: j.deployedBytecode };
+  }
+  return cachedCapped;
 }

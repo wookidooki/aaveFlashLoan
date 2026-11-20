@@ -22,8 +22,8 @@ async function deploy() {
   const aave = await viem.deployContract("MockAaveV3Pool");
   // token0/token1 ordering as passed (the receiver reads it from the pool).
   const v2 = await viem.deployContract("MockV2Pair", [usdc.address, weth.address]); // ETH at 2,000
-  const cl = await viem.deployContract("MockCLPool", [weth.address, usdc.address, false]); // ETH at 2,100
-  const clPancake = await viem.deployContract("MockCLPool", [weth.address, usdc.address, true]); // ETH at 2,100
+  const cl = await viem.deployContract("MockCLPool", [weth.address, usdc.address, 0]); // ETH at 2,100
+  const clPancake = await viem.deployContract("MockCLPool", [weth.address, usdc.address, 1]); // ETH at 2,100
 
   await usdc.write.mint([v2.address, USDC("2000000")]);
   await weth.write.mint([v2.address, WETH("1000")]);
@@ -51,8 +51,8 @@ async function profitableRoute(fx: Fx, clPool = fx.cl, kind: number = LEG_KIND.c
   const usdcOut = await clPool.read.quote([true, wethOut]); // WETH is token0 of the CL mock
   const premium = aaveV3Premium(LOAN, 5n);
   const legs: LegArg[] = [
-    { kind: LEG_KIND.v2, pool: fx.v2.address, tokenIn: fx.usdc.address, tokenOut: fx.weth.address, feeBps: 30, minOut: wethOut },
-    { kind, pool: clPool.address, tokenIn: fx.weth.address, tokenOut: fx.usdc.address, feeBps: 0, minOut: usdcOut },
+    { kind: LEG_KIND.v2, pool: fx.v2.address, tokenIn: fx.usdc.address, tokenOut: fx.weth.address, feeBps: 30, minOut: wethOut, data: "0x" },
+    { kind, pool: clPool.address, tokenIn: fx.weth.address, tokenOut: fx.usdc.address, feeBps: 0, minOut: usdcOut, data: "0x" },
   ];
   return { legs, wethOut, usdcOut, premium, profit: usdcOut - LOAN - premium };
 }
@@ -88,8 +88,8 @@ describe("FlashArbReceiverV3", () => {
     assert.ok(usdcOut < LOAN + premium);
     await fx.usdc.write.mint([fx.receiver.address, USDC("100000")]);
     const legs: LegArg[] = [
-      { kind: LEG_KIND.clUniswapCallback, pool: fx.cl.address, tokenIn: fx.usdc.address, tokenOut: fx.weth.address, feeBps: 0, minOut: wethOut },
-      { kind: LEG_KIND.v2, pool: fx.v2.address, tokenIn: fx.weth.address, tokenOut: fx.usdc.address, feeBps: 30, minOut: usdcOut },
+      { kind: LEG_KIND.clUniswapCallback, pool: fx.cl.address, tokenIn: fx.usdc.address, tokenOut: fx.weth.address, feeBps: 0, minOut: wethOut, data: "0x" },
+      { kind: LEG_KIND.v2, pool: fx.v2.address, tokenIn: fx.weth.address, tokenOut: fx.usdc.address, feeBps: 30, minOut: usdcOut, data: "0x" },
     ];
     await viem.assertions.revertWithCustomErrorWithArgs(
       fx.receiver.write.run([fx.usdc.address, LOAN, legs, 1n]),
@@ -160,6 +160,7 @@ describe("FlashArbReceiverV3", () => {
           { type: "tuple[]", components: [
             { name: "kind", type: "uint8" }, { name: "pool", type: "address" }, { name: "tokenIn", type: "address" },
             { name: "tokenOut", type: "address" }, { name: "feeBps", type: "uint16" }, { name: "minOut", type: "uint256" },
+            { name: "data", type: "bytes" },
           ] },
           { type: "uint256" },
         ],

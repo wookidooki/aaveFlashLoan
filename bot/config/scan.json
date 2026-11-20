@@ -1,24 +1,38 @@
 {
   "$comment": "Read-only scanner configuration. Add chains, assets, pairs or venues here; addresses are verified on-chain at startup and anything that fails verification is skipped with a recorded reason.",
-  "loanSizesUsd": [10000, 20000, 30000],
+  "loanSizesUsd": [
+    1000,
+    2500,
+    5000,
+    10000,
+    20000,
+    30000
+  ],
   "benchmarkNetUsd": 0.5,
   "dailyTargetUsd": 100,
   "intervalSeconds": 20,
   "maxRoundTripLossBps": 300,
   "poolRefreshMinutes": 30,
+  "probeUsd": 5,
+  "boundSlackBps": 20,
+  "fullQuoteTopRoutes": 10,
   "bestRouteSimulationEveryCycles": 5,
   "gasModel": {
     "txBaseGas": 21000,
     "flashLoanOverheadGas": 120000,
     "perLegOverheadGas": 35000,
     "v2SwapGas": 60000,
-    "solidlySwapGas": 90000
+    "solidlySwapGas": 90000,
+    "wrapGas": 30000
   },
   "chains": {
     "arbitrum": {
       "enabled": true,
       "chainId": 42161,
-      "rpcUrls": ["https://arbitrum-one-rpc.publicnode.com", "https://arb1.arbitrum.io/rpc"],
+      "rpcUrls": [
+        "https://arbitrum-one-rpc.publicnode.com",
+        "https://arb1.arbitrum.io/rpc"
+      ],
       "aavePoolAddressesProvider": "0xa97684ead0e402dC232d5A977953DF7ECBaB3CDb",
       "l1FeeModel": "arbitrum-nodeinterface",
       "gasToken": "WETH",
@@ -32,25 +46,146 @@
         "wstETH": "0x5979D7b546E38E414F7E9822514be443A4800529"
       },
       "pairs": [
-        ["USDC", "USDT"], ["USDC", "DAI"], ["USDT", "DAI"], ["USDC", "USDC.e"],
-        ["WETH", "USDC"], ["WETH", "USDT"], ["WBTC", "WETH"], ["WBTC", "USDC"], ["wstETH", "WETH"]
+        [
+          "USDC",
+          "USDT"
+        ],
+        [
+          "USDC",
+          "DAI"
+        ],
+        [
+          "USDT",
+          "DAI"
+        ],
+        [
+          "USDC",
+          "USDC.e"
+        ],
+        [
+          "WETH",
+          "USDC"
+        ],
+        [
+          "WETH",
+          "USDT"
+        ],
+        [
+          "WBTC",
+          "WETH"
+        ],
+        [
+          "WBTC",
+          "USDC"
+        ],
+        [
+          "wstETH",
+          "WETH"
+        ]
       ],
       "venues": [
-        { "id": "uniswap-v3", "type": "v3", "callback": "uniswap", "factory": "0x1F98431c8aD98523631AE4a59f267346ea31F984", "quoter": "0x61fFE014bA17989E743c5F6cB21bF9697530B21e", "fees": [100, 500, 3000, 10000] },
-        { "id": "sushiswap-v3", "type": "v3", "callback": "uniswap", "factory": "0x1af415a1EbA07a4986a52B6f2e7dE7003D82231e", "quoter": "0x0524E833cCD057e4d7A296e3aaAb9f7675964Ce1", "fees": [100, 500, 3000, 10000] },
-        { "id": "pancakeswap-v3", "type": "v3", "callback": "pancake", "factory": "0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865", "quoter": "0xB048Bbc1Ee6b733FFfCFb9e9CeF7375518e25997", "fees": [100, 500, 2500, 10000] },
-        { "id": "uniswap-v2", "type": "v2", "factory": "0xf1D7CC64Fb4452F05c498126312eBE29f30Fbcf9", "feeBps": 30 },
-        { "id": "sushiswap-v2", "type": "v2", "factory": "0xc35DADB65012eC5796536bD9864eD8773aBc74C4", "feeBps": 30 }
+        {
+          "id": "uniswap-v3",
+          "type": "v3",
+          "callback": "uniswap",
+          "factory": "0x1F98431c8aD98523631AE4a59f267346ea31F984",
+          "quoter": "0x61fFE014bA17989E743c5F6cB21bF9697530B21e",
+          "fees": [
+            100,
+            500,
+            3000,
+            10000
+          ]
+        },
+        {
+          "id": "sushiswap-v3",
+          "type": "v3",
+          "callback": "uniswap",
+          "factory": "0x1af415a1EbA07a4986a52B6f2e7dE7003D82231e",
+          "quoter": "0x0524E833cCD057e4d7A296e3aaAb9f7675964Ce1",
+          "fees": [
+            100,
+            500,
+            3000,
+            10000
+          ]
+        },
+        {
+          "id": "pancakeswap-v3",
+          "type": "v3",
+          "callback": "pancake",
+          "factory": "0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865",
+          "quoter": "0xB048Bbc1Ee6b733FFfCFb9e9CeF7375518e25997",
+          "fees": [
+            100,
+            500,
+            2500,
+            10000
+          ]
+        },
+        {
+          "id": "uniswap-v2",
+          "type": "v2",
+          "factory": "0xf1D7CC64Fb4452F05c498126312eBE29f30Fbcf9",
+          "feeBps": 30
+        },
+        {
+          "id": "sushiswap-v2",
+          "type": "v2",
+          "factory": "0xc35DADB65012eC5796536bD9864eD8773aBc74C4",
+          "feeBps": 30
+        },
+        {
+          "id": "uniswap-v4",
+          "type": "v4",
+          "poolManager": "0x360e68faccca8ca495c1b759fd9eee466db9fb32",
+          "quoter": "0x3972c00f7ed4885e145823eb7c655375d275a1c5",
+          "stateView": "0x76fd297e2d437cd7f76d50f01afe6160f86e9990",
+          "nativeAs": "WETH",
+          "keys": [
+            [
+              100,
+              1
+            ],
+            [
+              500,
+              10
+            ],
+            [
+              3000,
+              60
+            ],
+            [
+              10000,
+              200
+            ]
+          ]
+        },
+        {
+          "id": "camelot-v3",
+          "type": "algebra",
+          "factory": "0x1a3c9B1d2F0529D97f2afC5136Cc23e58f1FD35B"
+        },
+        {
+          "id": "camelot-v2",
+          "type": "pair-getamountout",
+          "factory": "0x6EcCab422D763aC031210895C81787E87B43A652"
+        }
       ],
       "unsupportedVenues": [
-        { "id": "camelot-v3", "reason": "Algebra pools use a different quoter and callback interface; adapter not implemented" },
-        { "id": "uniswap-v4", "reason": "singleton PoolManager with hooks; quoter and unlock-callback adapter not implemented" }
+        {
+          "id": "uniswap-v4 (hooked pools)",
+          "reason": "pools with hooks are excluded: a hook can change fees and deltas during the swap; only hookless keys are scanned"
+        }
       ]
     },
     "base": {
       "enabled": true,
       "chainId": 8453,
-      "rpcUrls": ["https://base-rpc.publicnode.com", "https://mainnet.base.org"],
+      "rpcUrls": [
+        "https://base-rpc.publicnode.com",
+        "https://mainnet.base.org"
+      ],
       "aavePoolAddressesProvider": "0xe20fCBdBfFC4Dd138cE8b2E6FBb6CB49777ad64D",
       "l1FeeModel": "opstack-gaspriceoracle",
       "gasToken": "WETH",
@@ -64,25 +199,161 @@
         "weETH": "0x04C0599Ae5A44757c0af6F9eC3b93da8976c150A"
       },
       "pairs": [
-        ["USDC", "USDbC"], ["WETH", "USDC"], ["WETH", "USDbC"], ["cbBTC", "USDC"], ["cbBTC", "WETH"],
-        ["wstETH", "WETH"], ["cbETH", "WETH"], ["weETH", "WETH"]
+        [
+          "USDC",
+          "USDbC"
+        ],
+        [
+          "WETH",
+          "USDC"
+        ],
+        [
+          "WETH",
+          "USDbC"
+        ],
+        [
+          "cbBTC",
+          "USDC"
+        ],
+        [
+          "cbBTC",
+          "WETH"
+        ],
+        [
+          "wstETH",
+          "WETH"
+        ],
+        [
+          "cbETH",
+          "WETH"
+        ],
+        [
+          "weETH",
+          "WETH"
+        ]
       ],
       "venues": [
-        { "id": "uniswap-v3", "type": "v3", "callback": "uniswap", "factory": "0x33128a8fC17869897dcE68Ed026d694621f6FDfD", "quoter": "0x3d4e44Eb1374240CE5F1B871ab261CD16335B76a", "fees": [100, 500, 3000, 10000] },
-        { "id": "sushiswap-v3", "type": "v3", "callback": "uniswap", "factory": "0xc35DADB65012eC5796536bD9864eD8773aBc74C4", "quoter": "0xb1E835Dc2785b52265711e17fCCb0fd018226a6e", "fees": [100, 500, 3000, 10000] },
-        { "id": "pancakeswap-v3", "type": "v3", "callback": "pancake", "factory": "0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865", "quoter": "0xB048Bbc1Ee6b733FFfCFb9e9CeF7375518e25997", "fees": [100, 500, 2500, 10000] },
-        { "id": "aerodrome-slipstream", "type": "slipstream", "callback": "uniswap", "factory": "0x5e7BB104d84c7CB9B682AaC2F3d509f5F406809A", "quoter": "0x254cF9E1E6e233aa1AC962CB9B05b2cfeAaE15b0", "tickSpacings": [1, 50, 100, 200, 2000] },
-        { "id": "aerodrome-v2", "type": "solidly", "factory": "0x420DD381b31aEf6683db6B902084cB0FFECe40Da" },
-        { "id": "uniswap-v2", "type": "v2", "factory": "0x8909Dc15e40173Ff4699343b6eB8132c65e18eC6", "feeBps": 30 }
+        {
+          "id": "uniswap-v3",
+          "type": "v3",
+          "callback": "uniswap",
+          "factory": "0x33128a8fC17869897dcE68Ed026d694621f6FDfD",
+          "quoter": "0x3d4e44Eb1374240CE5F1B871ab261CD16335B76a",
+          "fees": [
+            100,
+            500,
+            3000,
+            10000
+          ]
+        },
+        {
+          "id": "sushiswap-v3",
+          "type": "v3",
+          "callback": "uniswap",
+          "factory": "0xc35DADB65012eC5796536bD9864eD8773aBc74C4",
+          "quoter": "0xb1E835Dc2785b52265711e17fCCb0fd018226a6e",
+          "fees": [
+            100,
+            500,
+            3000,
+            10000
+          ]
+        },
+        {
+          "id": "pancakeswap-v3",
+          "type": "v3",
+          "callback": "pancake",
+          "factory": "0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865",
+          "quoter": "0xB048Bbc1Ee6b733FFfCFb9e9CeF7375518e25997",
+          "fees": [
+            100,
+            500,
+            2500,
+            10000
+          ]
+        },
+        {
+          "id": "aerodrome-slipstream",
+          "type": "slipstream",
+          "callback": "uniswap",
+          "factory": "0x5e7BB104d84c7CB9B682AaC2F3d509f5F406809A",
+          "quoter": "0x254cF9E1E6e233aa1AC962CB9B05b2cfeAaE15b0",
+          "tickSpacings": [
+            1,
+            10,
+            50,
+            100,
+            200,
+            2000
+          ]
+        },
+        {
+          "id": "aerodrome-v2",
+          "type": "solidly",
+          "factory": "0x420DD381b31aEf6683db6B902084cB0FFECe40Da"
+        },
+        {
+          "id": "uniswap-v2",
+          "type": "v2",
+          "factory": "0x8909Dc15e40173Ff4699343b6eB8132c65e18eC6",
+          "feeBps": 30
+        },
+        {
+          "id": "aerodrome-slipstream-2",
+          "type": "slipstream",
+          "callback": "uniswap",
+          "factory": "0xaDe65c38CD4849aDBA595a4323a8C7DdfE89716a",
+          "quoter": "injected",
+          "tickSpacings": [
+            1,
+            10,
+            50,
+            100,
+            200,
+            2000
+          ]
+        },
+        {
+          "id": "uniswap-v4",
+          "type": "v4",
+          "poolManager": "0x498581ff718922c3f8e6a244956af099b2652b2b",
+          "quoter": "0x0d5e0f971ed27fbff6c2837bf31316121532048d",
+          "stateView": "0xa3c0c9b65bad0b08107aa264b0f3db444b867a71",
+          "nativeAs": "WETH",
+          "keys": [
+            [
+              100,
+              1
+            ],
+            [
+              500,
+              10
+            ],
+            [
+              3000,
+              60
+            ],
+            [
+              10000,
+              200
+            ]
+          ]
+        }
       ],
       "unsupportedVenues": [
-        { "id": "uniswap-v4", "reason": "singleton PoolManager with hooks; quoter and unlock-callback adapter not implemented" }
+        {
+          "id": "uniswap-v4 (hooked pools)",
+          "reason": "pools with hooks are excluded: a hook can change fees and deltas during the swap; only hookless keys are scanned"
+        }
       ]
     },
     "optimism": {
       "enabled": true,
       "chainId": 10,
-      "rpcUrls": ["https://optimism-rpc.publicnode.com", "https://mainnet.optimism.io"],
+      "rpcUrls": [
+        "https://optimism-rpc.publicnode.com",
+        "https://mainnet.optimism.io"
+      ],
       "aavePoolAddressesProvider": "0xa97684ead0e402dC232d5A977953DF7ECBaB3CDb",
       "l1FeeModel": "opstack-gaspriceoracle",
       "gasToken": "WETH",
@@ -96,15 +367,116 @@
         "wstETH": "0x1F32b1c2345538c0c6f582fCB022739c4A194Ebb"
       },
       "pairs": [
-        ["USDC", "USDT"], ["USDC", "USDC.e"], ["USDC", "DAI"], ["WETH", "USDC"], ["WETH", "USDT"], ["WBTC", "WETH"], ["wstETH", "WETH"]
+        [
+          "USDC",
+          "USDT"
+        ],
+        [
+          "USDC",
+          "USDC.e"
+        ],
+        [
+          "USDC",
+          "DAI"
+        ],
+        [
+          "WETH",
+          "USDC"
+        ],
+        [
+          "WETH",
+          "USDT"
+        ],
+        [
+          "WBTC",
+          "WETH"
+        ],
+        [
+          "wstETH",
+          "WETH"
+        ]
       ],
       "venues": [
-        { "id": "uniswap-v3", "type": "v3", "callback": "uniswap", "factory": "0x1F98431c8aD98523631AE4a59f267346ea31F984", "quoter": "0x61fFE014bA17989E743c5F6cB21bF9697530B21e", "fees": [100, 500, 3000, 10000] },
-        { "id": "velodrome-v2", "type": "solidly", "factory": "0xF1046053aa5682b4F9a81b5481394DA16BE5FF5a" }
+        {
+          "id": "uniswap-v3",
+          "type": "v3",
+          "callback": "uniswap",
+          "factory": "0x1F98431c8aD98523631AE4a59f267346ea31F984",
+          "quoter": "0x61fFE014bA17989E743c5F6cB21bF9697530B21e",
+          "fees": [
+            100,
+            500,
+            3000,
+            10000
+          ]
+        },
+        {
+          "id": "velodrome-v2",
+          "type": "solidly",
+          "factory": "0xF1046053aa5682b4F9a81b5481394DA16BE5FF5a"
+        },
+        {
+          "id": "velodrome-slipstream",
+          "type": "slipstream",
+          "callback": "uniswap",
+          "factory": "0xCc0bDDB707055e04e497aB22a59c2aF4391cd12F",
+          "quoter": "0x89D8218ed5fF1e46d8dcd33fb0bbeE3be1621466",
+          "tickSpacings": [
+            1,
+            10,
+            50,
+            100,
+            200,
+            2000
+          ]
+        },
+        {
+          "id": "velodrome-slipstream-2",
+          "type": "slipstream",
+          "callback": "uniswap",
+          "factory": "0x548118C7E0B865C2CfA94D15EC86B666468ac758",
+          "quoter": "0xA2DEcF05c16537C702779083Fe067e308463CE45",
+          "tickSpacings": [
+            1,
+            10,
+            50,
+            100,
+            200,
+            2000
+          ]
+        },
+        {
+          "id": "uniswap-v4",
+          "type": "v4",
+          "poolManager": "0x9a13f98cb987694c9f086b1f5eb990eea8264ec3",
+          "quoter": "0x1f3131a13296fb91c90870043742c3cdbff1a8d7",
+          "stateView": "0xc18a3169788f4f75a170290584eca6395c75ecdb",
+          "nativeAs": "WETH",
+          "keys": [
+            [
+              100,
+              1
+            ],
+            [
+              500,
+              10
+            ],
+            [
+              3000,
+              60
+            ],
+            [
+              10000,
+              200
+            ]
+          ]
+        }
       ],
       "unsupportedVenues": [
-        { "id": "velodrome-slipstream", "reason": "quoter address not yet verified for this config" },
-        { "id": "uniswap-v4", "reason": "singleton PoolManager with hooks; quoter and unlock-callback adapter not implemented" }
+        {
+          "id": "uniswap-v4 (hooked pools)",
+          "reason": "pools with hooks are excluded: a hook can change fees and deltas during the swap; only hookless keys are scanned"
+        }
       ]
     }
   }

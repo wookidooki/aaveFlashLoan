@@ -83,9 +83,13 @@ export function buildReport(sessions: Summary[], ledger: any[], title: string): 
     `| Chains | ${chainNames.join(", ")} |`,
   );
   let routesQuoted = 0, routes = 0, quotesOk = 0, quotesFailed = 0, cycles = 0;
+  let routesEvaluated = 0, boundChecks = 0, boundViolations = 0;
   let best: any = null;
   for (const s of sessions)
     for (const c of Object.values<any>(s.chains)) {
+      routesEvaluated += c.routesEvaluatedEver ?? c.routesQuotedEver;
+      boundChecks += c.boundChecks ?? 0;
+      boundViolations += c.boundViolations ?? 0;
       routesQuoted += c.routesQuotedEver;
       routes += c.routes;
       quotesOk += c.quotesOk;
@@ -95,7 +99,8 @@ export function buildReport(sessions: Summary[], ledger: any[], title: string): 
     }
   L.push(
     `| Scan cycles (all chains) | ${cycles} |`,
-    `| Routes configured / quoted at least once | ${routes} / ${routesQuoted} |`,
+    `| Routes configured / evaluated at least once / fully quoted at least once | ${routes} / ${routesEvaluated} / ${routesQuoted} |`,
+    `| Marginal-price bound: soundness checks on fully quoted sizes / violations | ${boundChecks} / ${boundViolations} |`,
     `| Size-level quotes completed / failed | ${quotesOk} / ${quotesFailed} |`,
     `| Independent opportunities (>= benchmark on first quote; repeat sightings of one gap count once) | ${allEpisodes.length} |`,
     `| ...still qualifying on a fresh quote at a newer block | ${fresh.length} |`,
@@ -143,7 +148,8 @@ export function buildReport(sessions: Summary[], ledger: any[], title: string): 
         `- Venues scanned: ${c.venues.join(", ")}`,
         `- Venues skipped: ${c.venueSkips.map((v: any) => `${v.id} (${v.reason})`).join("; ") || "none"}`,
         `- Live pools: ${c.pools.length} — ${c.pools.map((p: any) => `${p.pair} ${p.label}`).join(", ")}`,
-        `- Routes: ${c.routes} configured, ${c.routesQuotedEver} quoted at least once, ${c.routesQuotedLastCycle} in the last cycle`,
+        `- Routes: ${c.routes} configured, ${c.routesEvaluatedEver ?? c.routesQuotedEver} evaluated at least once, ${c.routesQuotedEver} fully quoted at least once; last cycle ${c.routesQuotedLastCycle} fully quoted, ${c.routesPrunedLastCycle ?? 0} pruned by the marginal-price bound`,
+        `- Bound soundness: ${c.boundChecks ?? 0} checks, ${c.boundViolations ?? 0} violations`,
         "",
         "Pools skipped:",
         "",
@@ -180,7 +186,7 @@ export function buildReport(sessions: Summary[], ledger: any[], title: string): 
   }
   return {
     md: L.join("\n"),
-    json: { start, end, sessions: sessions.map((s) => s.sessionId), cycles, routes, routesQuoted, quotesOk, quotesFailed, opportunities: allEpisodes.length, freshQualified: fresh.length, best, simulations: sims, trades },
+    json: { start, end, sessions: sessions.map((s) => s.sessionId), cycles, routes, routesEvaluated, boundChecks, boundViolations, routesQuoted, quotesOk, quotesFailed, opportunities: allEpisodes.length, freshQualified: fresh.length, best, simulations: sims, trades },
   };
 }
 

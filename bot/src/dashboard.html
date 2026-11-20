@@ -95,8 +95,8 @@ function render(s) {
   $("session").textContent = s.sessionId ? `session ${s.sessionId} · started ${s.startedAt}` : "";
   const chains = Object.entries(s.chains || {});
 
-  $("chains").innerHTML = "<tr><th>Chain</th><th>Cycles</th><th>Last block</th><th>Cycle ms</th><th>Live pools</th><th>Routes quoted (last / ever / total)</th><th>Quotes ok / failed</th><th>Status</th></tr>" +
-    chains.map(([n, c]) => `<tr><td>${esc(n)} <span class="muted">${c.chainId}</span></td><td class="num">${c.cycles}</td><td class="num">${esc(c.lastBlock ?? "–")}</td><td class="num">${c.lastCycleMs ?? "–"}</td><td class="num">${c.pools.length}</td><td class="num">${c.routesQuotedLastCycle} / ${c.routesQuotedEver} / ${c.routes}</td><td class="num">${c.quotesOk} / ${c.quotesFailed}</td><td>${c.lastError ? `<span class="neg">${esc(c.lastError)}</span>` : "ok"}</td></tr>`).join("");
+  $("chains").innerHTML = "<tr><th>Chain</th><th>Cycles</th><th>Last block</th><th>Cycle ms</th><th>Live pools</th><th>Routes last cycle (full / pruned / total)</th><th>Size quotes ok / failed</th><th>Bound checks / violations</th><th>Status</th></tr>" +
+    chains.map(([n, c]) => `<tr><td>${esc(n)} <span class="muted">${c.chainId}</span></td><td class="num">${c.cycles}</td><td class="num">${esc(c.lastBlock ?? "–")}</td><td class="num">${c.lastCycleMs ?? "–"}</td><td class="num">${c.pools.length}</td><td class="num">${c.routesQuotedLastCycle} / ${c.routesPrunedLastCycle ?? 0} / ${c.routes}</td><td class="num">${c.quotesOk} / ${c.quotesFailed}</td><td class="num">${c.boundChecks ?? 0} / <span class="${c.boundViolations ? "neg" : ""}">${c.boundViolations ?? 0}</span></td><td>${c.lastError ? `<span class="neg">${esc(c.lastError)}</span>` : "ok"}</td></tr>`).join("");
 
   $("pairs").innerHTML = chains.map(([n, c]) => `<p><b>${esc(n)}</b><br><span class="muted">pairs</span> ${esc(c.pairs.join(", "))}<br><span class="muted">venues</span> ${esc(c.venues.join(", "))}` +
     (c.venueSkips.length ? `<br><span class="muted">venues skipped</span> ${c.venueSkips.map((v) => esc(`${v.id} (${v.reason})`)).join("; ")}` : "") + "</p>").join("");

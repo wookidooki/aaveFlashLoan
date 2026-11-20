@@ -33,6 +33,7 @@ npm run compile        # hardhat build
 npm test               # local-only tests on an in-process chain; no network, no keys
 npm run typecheck      # build + tsc --noEmit
 npm run scan -- --minutes 10 --chains arbitrum,base   # read-only: eth_call only, no transactions
+npm run verify         # read-only: simulate one live route through every venue; proceeds must equal quotes
 npm run dashboard      # operator view at http://127.0.0.1:8787 (read-only)
 npm run report -- --date YYYY-MM-DD                   # writes data/reports/
 ```
@@ -53,7 +54,12 @@ proxy (the npm scripts set it).
 
 - `contracts/fixture/` — Aave-v1-style local proof: `MockAaveV1LendingPool` (mirrors the vendored
   v1 flashLoan rules), `FixtureArbReceiver`, `MockDAI`. Tests run the historical Vyper bytecode.
-- `contracts/live/FlashArbReceiverV3.sol` — Aave v3 receiver used by the scanner's simulation.
+- `contracts/live/FlashArbReceiverV3.sol` — Aave v3 receiver used by the scanner's simulation. Leg
+  kinds: Uniswap-v3-style and Pancake callbacks, Algebra, v2 pairs, `getAmountOut` pools, and
+  Uniswap v4 (hookless only; native ETH via WETH unwrap/wrap).
+- `contracts/live/CLQuoter.sol`, `contracts/live/CappedMulticall.sol` — never deployed; injected by
+  eth_call state override to quote concentrated pools without a verified quoter, and to give every
+  quote its own gas cap.
 - `contracts/mocks/` — test doubles for the v3 receiver tests.
 - `src/` — scanner (`scanner.ts`), venue adapters (`venues.ts`), Aave reads (`aave.ts`), gas and L1
   fees (`gas.ts`), exact quote math (`quote/`), simulation encode/decode (`sim/`), ledger, report,

@@ -61,6 +61,10 @@ export interface RouteEval {
   best?: SizeEval;
   outcome: string;
   qualifies: boolean;
+  /** rate(first) x rate(second) at the probe size: an upper bound on the round-trip rate */
+  marginalProduct?: number;
+  /** not quoted at full sizes because the marginal-price bound cannot cover the premium */
+  pruned?: boolean;
   skip?: string;
 }
 
@@ -83,7 +87,7 @@ export interface SimRecord {
   chain: string;
   routeId: string;
   block: string;
-  purpose: "qualifying-opportunity" | "best-route-evidence";
+  purpose: "qualifying-opportunity" | "best-route-evidence" | "venue-verification";
   sizeUsd: number;
   amount: string;
   quotedLeg2Out: string;
@@ -122,6 +126,10 @@ interface ChainRuntime {
   lastError?: string;
   routesQuotedEver: Set<string>;
   routesQuotedLastCycle: number;
+  routesPrunedLastCycle: number;
+  routesEvaluatedEver: Set<string>;
+  boundChecks: number;
+  boundViolations: number;
   quotesOk: number;
   quotesFailed: number;
   skipCounts: Map<string, number>;
@@ -165,6 +173,10 @@ export class Scanner extends EventEmitter {
         cycles: 0,
         routesQuotedEver: new Set(),
         routesQuotedLastCycle: 0,
+        routesPrunedLastCycle: 0,
+        routesEvaluatedEver: new Set(),
+        boundChecks: 0,
+        boundViolations: 0,
         quotesOk: 0,
         quotesFailed: 0,
         skipCounts: new Map(),
@@ -273,7 +285,7 @@ export class Scanner extends EventEmitter {
     };
     for (const [a, b] of c.pairs) {
       for (const v of venues) {
-        const { pools, skips } = await discoverPools(rt.client, v, c.assets[a], c.assets[b], `${a}/${b}`, block, depth);
+        const { pools, skips } = await discoverPools(rt.client, v, c.assets[a], c.assets[b], `${a}/${b}`, block, depth, v.type === "v4" ? c.assets[v.nativeAs] : undefined);
         rt.pools.push(...pools);
         rt.poolSkips.push(...skips);
       }
@@ -304,7 +316,7 @@ export class Scanner extends EventEmitter {
       ] as const) {
         for (const p of pools) {
           for (const q of pools) {
-            if (p.address === q.address) continue;
+            if (p.id === q.id) continue;
             // X is sold on p and bought back on q.
             const [buyLo, sellLo] = x === lo ? [q, p] : [p, q];
             routes.push({
@@ -317,7 +329,7 @@ export class Scanner extends EventEmitter {
               midSym: ys,
               first: p,
               second: q,
-              gapKey: `${c.name}|${lo}|${hi}|buy@${buyLo.address}|sell@${sellLo.address}`,
+              gapKey: `${c.name}|${lo}|${hi}|buy@${buyLo.id}|sell@${sellLo.id}`,
             });
           }
         }
@@ -341,8 +353,8 @@ export class Scanner extends EventEmitter {
 
   private legsFor(route: Route, minOut1: bigint, minOut2: bigint): LegArg[] {
     return [
-      { kind: route.first.legKind, pool: route.first.address, tokenIn: route.borrow, tokenOut: route.mid, feeBps: route.first.feeBps, minOut: minOut1 },
-      { kind: route.second.legKind, pool: route.second.address, tokenIn: route.mid, tokenOut: route.borrow, feeBps: route.second.feeBps, minOut: minOut2 },
+      { kind: route.first.legKind, pool: route.first.address, tokenIn: route.borrow, tokenOut: route.mid, feeBps: route.first.feeBps, minOut: minOut1, data: route.first.legData },
+      { kind: route.second.legKind, pool: route.second.address, tokenIn: route.mid, tokenOut: route.borrow, feeBps: route.second.feeBps, minOut: minOut2, data: route.second.legData },
     ];
   }
 
@@ -358,6 +370,8 @@ export class Scanner extends EventEmitter {
     const v2Reserves = await readV2Reserves(rt.client, rt.pools, block);
 
     const evals: RouteEval[] = routes.map((route) => ({ route, block, sizes: [], outcome: "", qualifies: false }));
+    const full = exactL1 || routes.length <= this.cfg.fullQuoteTopRoutes;
+    if (!full) await this.applyMarginalBound(rt, evals, market, v2Reserves, block);
 
     // Leg 1, deduplicated by (pool, tokenIn, amount).
     const leg1Reqs: QuoteRequest[] = [];
@@ -369,6 +383,7 @@ export class Scanner extends EventEmitter {
         ev.skip = `borrow ${ev.route.borrowSym}: ${blocker}`;
         continue;
       }
+      if (ev.pruned) continue;
       for (const usd of this.cfg.loanSizesUsd) {
         const amount = this.loanAmount(rt, ev.route.borrow, s!.priceUsd8, usd);
         const size: SizeEval = { sizeUsd: usd, amount, premium: aaveV3Premium(amount, market.premiumBps) };
@@ -378,7 +393,7 @@ export class Scanner extends EventEmitter {
           size.skip = `Aave available liquidity ${units(s!.availableLiquidity, d)} < loan ${units(amount, d)} ${ev.route.borrowSym}`;
           continue;
         }
-        const key = `${ev.route.first.address}|${ev.route.borrow}|${amount}`;
+        const key = `${ev.route.first.id}|${ev.route.borrow}|${amount}`;
         if (!leg1Index.has(key)) {
           leg1Index.set(key, leg1Reqs.length);
           leg1Reqs.push({ pool: ev.route.first, tokenIn: ev.route.borrow, tokenOut: ev.route.mid, amountIn: amount });
@@ -393,7 +408,7 @@ export class Scanner extends EventEmitter {
     for (const ev of evals) {
       for (const size of ev.sizes) {
         if (size.skip) continue;
-        const q1 = leg1[leg1Index.get(`${ev.route.first.address}|${ev.route.borrow}|${size.amount}`)!];
+        const q1 = leg1[leg1Index.get(`${ev.route.first.id}|${ev.route.borrow}|${size.amount}`)!];
         if ("error" in q1) {
           size.skip = `leg1 ${ev.route.first.label}: ${q1.error}`;
           continue;
@@ -454,11 +469,65 @@ export class Scanner extends EventEmitter {
         if (exactL1) await this.exactCost(rt, ev, prices, block, ethUsd, market);
         ev.qualifies = ev.best.netUsd! >= this.cfg.benchmarkNetUsd;
         ev.outcome = this.classify(ev.best);
-      } else if (!ev.skip) {
+      } else if (!ev.skip && !ev.pruned) {
         ev.skip = ev.sizes.map((s) => s.skip).find(Boolean) ?? "no size quoted";
       }
     }
     return { evals, market, prices };
+  }
+
+  /**
+   * Marginal-price bound. Every pool is quoted in both directions at a tiny size (probeUsd). For
+   * exact-input swaps the output per unit of input never rises as the input grows (fees are fixed
+   * and price impact only adds up), so a route's best possible round-trip rate at any loan size is
+   * at most rate(first) x rate(second) at the probe size, up to the probe's own tiny impact and
+   * rounding, which boundSlackBps covers. Routes whose bound cannot cover 1 + premium are recorded
+   * as pruned instead of being quoted at every size. Routes near break-even, routes without a probe,
+   * and the top fullQuoteTopRoutes routes by bound are always quoted in full.
+   */
+  private async applyMarginalBound(rt: ChainRuntime, evals: RouteEval[], market: MarketState, v2Reserves: Map<Address, [bigint, bigint]>, block: bigint) {
+    const reqs: QuoteRequest[] = [];
+    const index = new Map<string, number>();
+    for (const ev of evals) {
+      for (const [pool, tokenIn, tokenOut] of [
+        [ev.route.first, ev.route.borrow, ev.route.mid],
+        [ev.route.second, ev.route.mid, ev.route.borrow],
+      ] as const) {
+        const key = `${pool.id}|${tokenIn}`;
+        if (index.has(key)) continue;
+        const p = market.assets.get(tokenIn)?.priceUsd8;
+        if (!p) continue;
+        index.set(key, reqs.length);
+        reqs.push({ pool, tokenIn, tokenOut, amountIn: this.loanAmount(rt, tokenIn, p, this.cfg.probeUsd) });
+      }
+    }
+    const quotes = await quoteMany(rt.client, reqs, v2Reserves, this.cfg.gasModel, block);
+    const rate = (poolId: string, tokenIn: Address) => {
+      const i = index.get(`${poolId}|${tokenIn}`);
+      if (i === undefined) return undefined;
+      const q = quotes[i];
+      return "error" in q ? undefined : Number(q.amountOut) / Number(reqs[i].amountIn);
+    };
+    for (const ev of evals) {
+      const r1 = rate(ev.route.first.id, ev.route.borrow);
+      const r2 = rate(ev.route.second.id, ev.route.mid);
+      if (r1 !== undefined && r2 !== undefined) ev.marginalProduct = r1 * r2;
+    }
+    const needed = 1 + Number(market.premiumBps) / 1e4;
+    const slack = 1 + this.cfg.boundSlackBps / 1e4;
+    const top = new Set(
+      evals
+        .filter((e) => e.marginalProduct !== undefined)
+        .sort((a, b) => b.marginalProduct! - a.marginalProduct!)
+        .slice(0, this.cfg.fullQuoteTopRoutes),
+    );
+    for (const ev of evals) {
+      if (ev.marginalProduct === undefined || top.has(ev)) continue;
+      if (ev.marginalProduct * slack < needed) {
+        ev.pruned = true;
+        ev.outcome = "pruned: marginal prices cannot cover the Aave premium at any size";
+      }
+    }
   }
 
   /** Recompute the best size's cost with the exact L1 fee for that route's calldata. */
@@ -504,7 +573,28 @@ export class Scanner extends EventEmitter {
     rt.lastBlock = block;
 
     let quotedRoutes = 0;
+    let prunedRoutes = 0;
     for (const ev of evals) {
+      if (ev.pruned && !ev.skip) {
+        prunedRoutes++;
+        rt.routesEvaluatedEver.add(ev.route.id);
+        bump(rt.outcomeCounts, ev.outcome);
+        continue;
+      }
+      if (ev.best) rt.routesEvaluatedEver.add(ev.route.id);
+      // Soundness check of the pruning bound on every fully quoted route: the real round-trip rate
+      // at any size must not exceed the marginal-rate product (plus slack).
+      if (ev.marginalProduct !== undefined) {
+        for (const s of ev.sizes) {
+          if (s.leg2Out === undefined) continue;
+          rt.boundChecks++;
+          const actual = Number(s.leg2Out) / Number(s.amount);
+          if (actual > ev.marginalProduct * (1 + this.cfg.boundSlackBps / 1e4)) {
+            rt.boundViolations++;
+            this.log("warn", `bound violated on ${ev.route.id} $${s.sizeUsd}: actual rate ${actual} > bound ${ev.marginalProduct}`, c.name);
+          }
+        }
+      }
       if (ev.skip) bump(rt.skipCounts, `route: ${normalizeReason(ev.skip)}`);
       for (const s of ev.sizes) if (s.skip) bump(rt.skipCounts, `size: ${normalizeReason(s.skip)}`);
       rt.quotesFailed += ev.sizes.filter((s) => s.skip?.startsWith("leg")).length;
@@ -518,6 +608,7 @@ export class Scanner extends EventEmitter {
       }
     }
     rt.routesQuotedLastCycle = quotedRoutes;
+    rt.routesPrunedLastCycle = prunedRoutes;
     const ranked = evals.filter((e) => e.best).sort((a, b) => b.best!.netUsd! - a.best!.netUsd!);
     rt.bestLastCycle = ranked[0];
     if (ranked[0] && (!rt.bestEver || ranked[0].best!.netUsd! > rt.bestEver.best!.netUsd!)) rt.bestEver = ranked[0];
@@ -525,7 +616,7 @@ export class Scanner extends EventEmitter {
     const b = ranked[0];
     this.log(
       "info",
-      `block ${block}: ${quotedRoutes}/${evals.length} routes quoted in ${Date.now() - t0} ms; ` +
+      `block ${block}: ${evals.length} routes, ${quotedRoutes} fully quoted, ${prunedRoutes} pruned by marginal-price bound, in ${Date.now() - t0} ms; ` +
         (b ? `best ${b.route.id} $${b.best!.sizeUsd} net $${fmt(b.best!.netUsd!)} (${b.outcome})` : "no route quoted"),
       c.name,
     );
@@ -680,6 +771,42 @@ export class Scanner extends EventEmitter {
     return rec;
   }
 
+  /**
+   * Venue verification: for every venue with live pools on every chain (v4 split into native-ETH and
+   * ERC20 pools), pick the route through it with the best marginal product, quote it in full and
+   * run it through the receiver's simulate() at the same block. Proceeds equal to the quote show the
+   * adapter's quote and the receiver's execution path agree against real chain state.
+   */
+  async verifyVenues(): Promise<{ chain: string; venue: string; rec?: SimRecord; note?: string }[]> {
+    const out: { chain: string; venue: string; rec?: SimRecord; note?: string }[] = [];
+    for (const rt of this.chains.values()) {
+      if (!rt.market) await this.init(rt);
+      const block = (await rt.client.getBlockNumber()) - 1n;
+      await this.refreshPools(rt, block);
+      const { evals } = await this.evaluate(rt, rt.routes, block);
+      const groups = new Map<string, (p: PoolInfo) => boolean>();
+      for (const p of rt.pools) {
+        const name = p.venue.type === "v4" ? `${p.venue.id} (${p.native ? "native ETH" : "ERC20"})` : p.venue.id;
+        if (!groups.has(name)) groups.set(name, (q) => q.venue.id === p.venue.id && (p.venue.type !== "v4" || !!q.native === !!p.native));
+      }
+      for (const [name, match] of groups) {
+        const cands = evals
+          .filter((e) => !e.skip && (match(e.route.first) || match(e.route.second)))
+          .sort((a, b) => (b.marginalProduct ?? -1) - (a.marginalProduct ?? -1));
+        let done = false;
+        for (const cand of cands.slice(0, 3)) {
+          const [f] = (await this.evaluate(rt, [cand.route], block, true)).evals;
+          if (!f.best) continue;
+          out.push({ chain: rt.cfg.name, venue: name, rec: await this.simulate(rt, f, "venue-verification") });
+          done = true;
+          break;
+        }
+        if (!done) out.push({ chain: rt.cfg.name, venue: name, note: cands.length ? "no route through this venue could be quoted at any size" : "no route" });
+      }
+    }
+    return out;
+  }
+
   // ---------------------------------------------------------------- reporting
 
   summary() {
@@ -695,11 +822,15 @@ export class Scanner extends EventEmitter {
         pairs: rt.cfg.pairs.map(([a, b]) => `${a}/${b}`),
         venues: rt.cfg.venues.map((v) => v.id),
         venueSkips: rt.venueSkips,
-        pools: rt.pools.map((p) => ({ label: p.label, pair: `${rt.symbols.get(p.token0)}/${rt.symbols.get(p.token1)}`, address: p.address })),
+        pools: rt.pools.map((p) => ({ label: p.label, pair: `${rt.symbols.get(p.token0)}/${rt.symbols.get(p.token1)}`, address: p.address, id: p.id })),
         poolSkips: rt.poolSkips,
         routes: rt.routes.length,
         routesQuotedEver: rt.routesQuotedEver.size,
         routesQuotedLastCycle: rt.routesQuotedLastCycle,
+        routesPrunedLastCycle: rt.routesPrunedLastCycle,
+        routesEvaluatedEver: rt.routesEvaluatedEver.size,
+        boundChecks: rt.boundChecks,
+        boundViolations: rt.boundViolations,
         quotesOk: rt.quotesOk,
         quotesFailed: rt.quotesFailed,
         skipCounts: Object.fromEntries([...rt.skipCounts].sort((a, b) => b[1] - a[1])),
@@ -778,8 +909,8 @@ export function serializeEval(rt: { decimals: Map<Address, number> }, ev: RouteE
     pair: ev.route.pair,
     borrow: ev.route.borrowSym,
     via: ev.route.midSym,
-    first: { label: ev.route.first.label, pool: ev.route.first.address },
-    second: { label: ev.route.second.label, pool: ev.route.second.address },
+    first: { label: ev.route.first.label, pool: ev.route.first.address, id: ev.route.first.id },
+    second: { label: ev.route.second.label, pool: ev.route.second.address, id: ev.route.second.id },
     block: String(ev.block),
     outcome: ev.outcome || ev.skip || "",
     qualifies: ev.qualifies,
