@@ -47,7 +47,9 @@ contract FlashArbForkArbitrumTest is FlashArbForkShared {
     function _usdcSizes() internal pure override returns (uint256[] memory s) {
         uint256[7] memory usd = [uint256(25), 50, 100, 250, 500, 1000, 2500];
         s = new uint256[](usd.length);
-        for (uint256 i; i < usd.length; ++i) s[i] = usd[i] * 1e6;
+        for (uint256 i; i < usd.length; ++i) {
+            s[i] = usd[i] * 1e6;
+        }
     }
 
     function _wethSizes() internal pure override returns (uint256[] memory s) {

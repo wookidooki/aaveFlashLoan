@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {
-    FlashArbForkShared, IV2FactoryF, IV3FactoryF, IClFactoryF, ISolidlyFactoryF
-} from "./FlashArbForkShared.sol";
+import {FlashArbForkShared, IV2FactoryF, IV3FactoryF, IClFactoryF, ISolidlyFactoryF} from "./FlashArbForkShared.sol";
 
 // Fork test: runs FlashArb against a local copy of live Base.
 // Run:   forge test --match-contract FlashArbForkBase -vv
@@ -41,7 +39,9 @@ contract FlashArbForkBaseTest is FlashArbForkShared {
     function _usdcSizes() internal pure override returns (uint256[] memory s) {
         uint256[7] memory usd = [uint256(100), 500, 1000, 2500, 5000, 10000, 25000];
         s = new uint256[](usd.length);
-        for (uint256 i; i < usd.length; ++i) s[i] = usd[i] * 1e6;
+        for (uint256 i; i < usd.length; ++i) {
+            s[i] = usd[i] * 1e6;
+        }
     }
 
     function _wethSizes() internal pure override returns (uint256[] memory s) {
