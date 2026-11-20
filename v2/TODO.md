@@ -4,7 +4,7 @@ Planned work, in the suggested order. It comes from the independent review (Fabl
 
 ## 1. Must do before adding smaller tokens
 
-- [ ] **FlashArb: use the real token amounts.** At each swap, measure the balance before and after, and do not trust the computed amount. This is needed for tokens that take a fee on transfer. It also handles v3 swaps that only partly fill, which leave unused tokens behind.
+- [x] **FlashArb: use the real token amounts.** Done 2026-11-20: each hop now uses the measured balance change, and a v3 swap that only partly fills reverts with `PartialFill`. At each swap, measure the balance before and after, and do not trust the computed amount. This is needed for tokens that take a fee on transfer. It also handles v3 swaps that only partly fill, which leave unused tokens behind.
 
 ## 2. Next (works with the free public links)
 

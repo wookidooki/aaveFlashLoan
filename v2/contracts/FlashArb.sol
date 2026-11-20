@@ -30,8 +30,13 @@ interface IMorpho {
     function flashLoan(address token, uint256 assets, bytes calldata data) external;
 }
 
+/// @dev Uniswap v2 pairs return (uint112, uint112, uint32) and Aerodrome pools return
+///      (uint256, uint256, uint256). Both decode as three uint256 values.
+interface IReserves {
+    function getReserves() external view returns (uint256 reserve0, uint256 reserve1, uint256 blockTimestampLast);
+}
+
 interface IV2Pair {
-    function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast);
     function swap(uint256 amount0Out, uint256 amount1Out, address to, bytes calldata data) external;
 }
 
@@ -87,6 +92,7 @@ contract FlashArb {
     error BadCallback();
     error NotEnoughProfit(uint256 amountOut, uint256 needed);
     error TokenCallFailed();
+    error PartialFill();
 
     constructor(address aavePool_, address morpho_) {
         owner = msg.sender;
@@ -195,8 +201,11 @@ contract FlashArb {
         }
     }
 
+    /// @return amountOut the amount of tokenOut this contract really received. It can be
+    ///         less than the pool sent, for tokens that take a fee on transfer.
     function _swap(Hop memory h, uint256 amountIn) internal returns (uint256 amountOut) {
         bool zeroForOne = h.tokenIn < h.tokenOut;
+        uint256 outBefore = IERC20(h.tokenOut).balanceOf(address(this));
 
         if (h.kind == KIND_V3) {
             _tstore(EXPECTED_POOL_SLOT, uint256(uint160(h.pool)));
@@ -208,25 +217,29 @@ contract FlashArb {
                 abi.encode(h.tokenIn)
             );
             _tstore(EXPECTED_POOL_SLOT, 0);
-            amountOut = uint256(-(zeroForOne ? a1 : a0));
-            return amountOut;
-        }
-
-        if (h.kind == KIND_V2) {
-            (uint256 r0, uint256 r1,) = IV2Pair(h.pool).getReserves();
+            // The pool stopped early (out of liquidity). Do not leave tokens behind.
+            if (uint256(zeroForOne ? a0 : a1) != amountIn) revert PartialFill();
+        } else if (h.kind == KIND_V2 || h.kind == KIND_SOLIDLY) {
+            // Send first, then price the swap from what the pool really received.
+            _safeTransfer(h.tokenIn, h.pool, amountIn);
+            (uint256 r0, uint256 r1,) = IReserves(h.pool).getReserves();
             (uint256 rIn, uint256 rOut) = zeroForOne ? (r0, r1) : (r1, r0);
-            uint256 inWithFee = amountIn * (10000 - h.feeBps);
-            amountOut = (inWithFee * rOut) / (rIn * 10000 + inWithFee);
-        } else if (h.kind == KIND_SOLIDLY) {
-            amountOut = ISolidlyPool(h.pool).getAmountOut(amountIn, h.tokenIn);
+            uint256 realIn = IERC20(h.tokenIn).balanceOf(h.pool) - rIn;
+            uint256 out;
+            if (h.kind == KIND_V2) {
+                uint256 inWithFee = realIn * (10000 - h.feeBps);
+                out = (inWithFee * rOut) / (rIn * 10000 + inWithFee);
+            } else {
+                out = ISolidlyPool(h.pool).getAmountOut(realIn, h.tokenIn);
+            }
+            (uint256 out0, uint256 out1) = zeroForOne ? (uint256(0), out) : (out, uint256(0));
+            // Uniswap v2 pairs and Solidly pools share this swap signature.
+            IV2Pair(h.pool).swap(out0, out1, address(this), "");
         } else {
             revert BadRoute();
         }
 
-        _safeTransfer(h.tokenIn, h.pool, amountIn);
-        (uint256 out0, uint256 out1) = zeroForOne ? (uint256(0), amountOut) : (amountOut, uint256(0));
-        // Uniswap v2 pairs and Solidly pools share this swap signature.
-        IV2Pair(h.pool).swap(out0, out1, address(this), "");
+        amountOut = IERC20(h.tokenOut).balanceOf(address(this)) - outBefore;
     }
 
     function _tstore(uint256 slot, uint256 value) internal {

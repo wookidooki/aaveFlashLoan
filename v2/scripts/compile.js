@@ -3,10 +3,14 @@ import solc from 'solc';
 import fs from 'node:fs';
 import path from 'node:path';
 
-const dir = path.resolve('contracts');
+// test/contracts holds test-only mocks. They are never deployed by scripts/deploy.js.
 const sources = {};
-for (const f of fs.readdirSync(dir).filter((f) => f.endsWith('.sol'))) {
-  sources[f] = { content: fs.readFileSync(path.join(dir, f), 'utf8') };
+for (const d of ['contracts', 'test/contracts']) {
+  const dir = path.resolve(d);
+  if (!fs.existsSync(dir)) continue;
+  for (const f of fs.readdirSync(dir).filter((f) => f.endsWith('.sol'))) {
+    sources[f] = { content: fs.readFileSync(path.join(dir, f), 'utf8') };
+  }
 }
 const input = {
   language: 'Solidity',
