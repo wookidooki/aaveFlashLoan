@@ -63,12 +63,16 @@ forge build
 forge test
 ```
 
-`test/foundry/FlashArb.fork.t.sol` does the same checks as `npm run test:fork`, on a local copy of Base, in about 15 seconds:
+The fork tests do the same checks as `npm run test:fork`, on a local copy of Base and of Arbitrum, in about 15 seconds. Shared checks are in `test/foundry/FlashArbForkShared.sol`. Each chain file adds its own pools:
+
+- `FlashArb.fork.t.sol` (Base): Uniswap v3, Aerodrome CL, Aerodrome
+- `FlashArb.fork.arbitrum.t.sol` (Arbitrum): Uniswap v3, Sushi v3, PancakeSwap v3, Sushi v2
 
 ```bash
-forge test --match-contract FlashArbForkBase -vv   # fork test only (needs internet)
+forge test --match-contract Fork -vv               # both fork tests (needs internet)
+forge test --match-contract FlashArbForkArbitrum   # one chain only
 forge test --no-match-contract Fork                # offline tests only
-BASE_FORK_BLOCK=<number> forge test                # same block every run
+BASE_FORK_BLOCK=<n> ARBITRUM_FORK_BLOCK=<n> forge test   # same blocks every run
 ```
 
 For a new fork test, call `vm.createSelectFork("base")` or `vm.createSelectFork("arbitrum")` (links are in `foundry.toml`).
