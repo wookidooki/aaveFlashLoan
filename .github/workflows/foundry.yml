@@ -89,7 +89,8 @@ jobs:
 
   # Coverage: runs all Foundry tests (fork tests included) and measures which
   # lines of the contracts they reach. The table is shown on the run's summary page.
-  # The full report (HTML + lcov.info) is saved as the "coverage-report" download.
+  # The line-by-line data (lcov.info) is saved as the "coverage-report" download.
+  # (No HTML page: genhtml 2.4 on the runner rejects forge's lcov branch data.)
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
@@ -112,14 +113,7 @@ jobs:
             sed -n '/^| File/,/^| Total/p' coverage.txt
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: HTML report
-        run: |
-          sudo apt-get install -y -qq lcov
-          genhtml lcov.info --branch-coverage -o coverage-html
-
       - uses: actions/upload-artifact@v4
         with:
           name: coverage-report
-          path: |
-            v2/lcov.info
-            v2/coverage-html
+          path: v2/lcov.info
