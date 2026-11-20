@@ -19,6 +19,7 @@ const USDC = getAddress(C.tokens.USDC);
 const dex = (name) => C.dexes.find((d) => d.name === name);
 const factoryAbi = parseAbi(['function createPair(address,address) returns (address)', 'function getPair(address,address) view returns (address)']);
 const pairMintAbi = parseAbi(['function mint(address) returns (uint256)']);
+const aeroFactoryAbi = parseAbi(['function createPool(address,address,bool) returns (address)', 'function getPool(address,address,bool) view returns (address)']);
 
 const transport = hardhatTransport;
 const pub = createPublicClient({ chain: base, transport });
@@ -93,6 +94,46 @@ test('captures a gap on a fee-on-transfer token (USDC -> FEE on UniswapV2, FEE -
     await testClient.revert({ id: snap });
   }
 });
+
+/** Creates a token/USDC Aerodrome pool and adds liquidity. The token is minted straight
+ *  to the pool (no transfer fee), because a new stable pool needs exactly equal deposits. */
+async function makeAeroPool(token, stable, usdcAmount, tokenAmount) {
+  const factory = dex('Aerodrome').factory;
+  await send({ address: factory, abi: aeroFactoryAbi, functionName: 'createPool', args: [token, USDC, stable] });
+  const pool = await pub.readContract({ address: factory, abi: aeroFactoryAbi, functionName: 'getPool', args: [token, USDC, stable] });
+  await send({ address: USDC, abi: erc20Abi, functionName: 'transfer', args: [pool, usdcAmount] });
+  await send({ address: token, abi: MockFeeToken.abi, functionName: 'mint', args: [pool, tokenAmount] });
+  await send({ address: pool, abi: pairMintAbi, functionName: 'mint', args: [owner] });
+  return pool;
+}
+
+for (const stable of [false, true]) {
+  const type = stable ? 'stable' : 'volatile';
+  test(`captures a gap on a fee-on-transfer token (USDC -> FEE on UniswapV2, FEE -> USDC on Aerodrome ${type})`, async () => {
+    const snap = await testClient.snapshot();
+    try {
+      const fee = await deploy(MockFeeToken, [100]); // 1% burned on every transfer
+      await send({ address: fee, abi: MockFeeToken.abi, functionName: 'mint', args: [owner, parseEther('100000')] });
+      // FEE is ~10% cheaper on UniswapV2 than on the Aerodrome pool.
+      const cheap = await makePair(dex('UniswapV2').factory, fee, 10_000n * 10n ** 6n, parseEther('11000'));
+      const dear = await makeAeroPool(fee, stable, 10_000n * 10n ** 6n, parseEther('10000'));
+
+      const route = [
+        hop({ kind: 'v2', feeBps: 30, address: cheap }, USDC, fee),
+        hop({ kind: 'solidly', address: dear }, fee, USDC),
+      ];
+      const before = await bal(USDC, owner);
+      await send({ address: flashArb, abi: FlashArb.abi, functionName: 'startArb', args: [USDC, 200n * 10n ** 6n, route, 1n] });
+      const gained = (await bal(USDC, owner)) - before;
+      console.log(`  fee token, Aerodrome ${type}: real profit ${Number(gained) / 1e6} USDC`);
+      assert.ok(gained > 0n, 'owner should gain USDC');
+      assert.equal(await bal(USDC, flashArb), 0n, 'contract keeps no USDC');
+      assert.equal(await bal(fee, flashArb), 0n, 'contract keeps no fee token');
+    } finally {
+      await testClient.revert({ id: snap });
+    }
+  });
+}
 
 test('reverts with PartialFill when a v3 pool fills only part of the swap', async () => {
   const snap = await testClient.snapshot();
