@@ -1,0 +1,13 @@
+node_modules/
+artifacts/
+cache/
+logs/
+.env
+
+# Foundry
+out/
+cache_forge/
+broadcast/
+lcov.info
+coverage.txt
+coverage-html/
