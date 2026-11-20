@@ -140,13 +140,10 @@ contract FlashArb {
     }
 
     /// @notice Called by Aave during the flash loan.
-    function executeOperation(
-        address asset,
-        uint256 amount,
-        uint256 premium,
-        address initiator,
-        bytes calldata params
-    ) external returns (bool) {
+    function executeOperation(address asset, uint256 amount, uint256 premium, address initiator, bytes calldata params)
+        external
+        returns (bool)
+    {
         if (msg.sender != address(aavePool)) revert NotAavePool();
         if (initiator != address(this)) revert BadInitiator();
 
@@ -200,13 +197,14 @@ contract FlashArb {
 
         if (h.kind == KIND_V3) {
             _tstore(EXPECTED_POOL_SLOT, uint256(uint160(h.pool)));
-            (int256 a0, int256 a1) = IV3Pool(h.pool).swap(
-                address(this),
-                zeroForOne,
-                int256(amountIn),
-                zeroForOne ? MIN_SQRT_RATIO_PLUS_ONE : MAX_SQRT_RATIO_MINUS_ONE,
-                abi.encode(h.tokenIn)
-            );
+            (int256 a0, int256 a1) = IV3Pool(h.pool)
+                .swap(
+                    address(this),
+                    zeroForOne,
+                    int256(amountIn),
+                    zeroForOne ? MIN_SQRT_RATIO_PLUS_ONE : MAX_SQRT_RATIO_MINUS_ONE,
+                    abi.encode(h.tokenIn)
+                );
             _tstore(EXPECTED_POOL_SLOT, 0);
             amountOut = uint256(-(zeroForOne ? a1 : a0));
             return amountOut;

@@ -32,8 +32,8 @@ jobs:
         with:
           version: stable
 
-      - name: Check format (tests only; contracts are not formatted with forge fmt)
-        run: forge fmt --check test/foundry
+      - name: Check format
+        run: forge fmt --check
 
       - name: Build
         run: forge build --sizes

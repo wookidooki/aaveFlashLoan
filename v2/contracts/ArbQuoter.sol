@@ -46,10 +46,7 @@ contract ArbQuoter {
 
     /// @notice For each route i and each input amount j, returns the final output amount.
     ///         0 means the quote failed (no liquidity, partial fill, or pool error).
-    function quote(Hop[][] calldata routes, uint256[][] calldata amounts)
-        external
-        returns (uint256[][] memory outs)
-    {
+    function quote(Hop[][] calldata routes, uint256[][] calldata amounts) external returns (uint256[][] memory outs) {
         outs = new uint256[][](routes.length);
         for (uint256 i; i < routes.length; ++i) {
             outs[i] = new uint256[](amounts[i].length);
@@ -93,13 +90,16 @@ contract ArbQuoter {
         if (h.kind == 2) {
             if (amountIn > uint256(type(int256).max)) return 0;
             uint256 g0 = gasleft();
-            try IV3PoolQ(h.pool).swap(
-                address(this),
-                zeroForOne,
-                int256(amountIn),
-                zeroForOne ? MIN_SQRT_RATIO_PLUS_ONE : MAX_SQRT_RATIO_MINUS_ONE,
-                ""
-            ) returns (int256, int256) {
+            try IV3PoolQ(h.pool)
+                .swap(
+                    address(this),
+                    zeroForOne,
+                    int256(amountIn),
+                    zeroForOne ? MIN_SQRT_RATIO_PLUS_ONE : MAX_SQRT_RATIO_MINUS_ONE,
+                    ""
+                ) returns (
+                int256, int256
+            ) {
                 return 0; // should never happen: the callback always reverts
             } catch (bytes memory reason) {
                 if (reason.length != 64) {
