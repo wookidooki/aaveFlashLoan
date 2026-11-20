@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Arb Scanner Operator</title>
+<style>
+  :root { --bg:#f6f7f9; --panel:#fff; --text:#1b1f24; --muted:#5f6b7a; --line:#dde2e8; --accent:#2457d6; --good:#1a7f4b; --bad:#b42318; --warn:#9a6700; --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#0f1216; --panel:#171b21; --text:#e6e9ee; --muted:#93a0b0; --line:#2a313b; --accent:#7aa2ff; --good:#4ec98a; --bad:#ff7a6e; --warn:#e0b341; } }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font: 14px/1.45 system-ui, -apple-system, Segoe UI, sans-serif; }
+  header { display:flex; flex-wrap:wrap; gap:12px; align-items:center; padding:14px 16px; border-bottom:1px solid var(--line); background:var(--panel); position:sticky; top:0; z-index:2; }
+  h1 { font-size:16px; margin:0 12px 0 0; }
+  h2 { font-size:13px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); margin:0 0 8px; }
+  button { font:inherit; padding:6px 14px; border-radius:6px; border:1px solid var(--line); background:var(--panel); color:var(--text); cursor:pointer; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button:disabled { opacity:.45; cursor:default; }
+  .badge { padding:3px 8px; border-radius:999px; font-size:12px; border:1px solid var(--line); }
+  .on { color:var(--good); border-color:var(--good); } .off { color:var(--muted); } .danger { color:var(--bad); border-color:var(--bad); }
+  main { display:grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap:14px; padding:14px 16px; }
+  section { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:12px; min-width:0; }
+  .wide { grid-column: 1 / -1; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th, td { text-align:left; padding:4px 6px; border-bottom:1px solid var(--line); vertical-align:top; overflow-wrap:anywhere; }
+  th { color:var(--muted); font-weight:600; }
+  td.num { text-align:right; font-variant-numeric: tabular-nums; white-space:nowrap; }
+  .pos { color:var(--good); } .neg { color:var(--bad); }
+  .cards { display:grid; grid-template-columns: repeat(auto-fit, minmax(180px,1fr)); gap:10px; }
+  .card { border:1px solid var(--line); border-radius:8px; padding:10px; }
+  .card .big { font-size:20px; font-weight:600; font-variant-numeric: tabular-nums; }
+  .muted { color:var(--muted); font-size:12px; }
+  #log { font-family:var(--mono); font-size:12px; height:340px; overflow:auto; background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:6px; white-space:pre-wrap; }
+  .lv-warn { color:var(--warn); } .lv-error { color:var(--bad); } .lv-opportunity { color:var(--good); font-weight:600; } .lv-sim { color:var(--accent); }
+  .scroll { max-height:320px; overflow:auto; }
+  code { font-family:var(--mono); font-size:12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Flash-loan arbitrage scanner</h1>
+  <span id="status" class="badge off">stopped</span>
+  <span class="badge danger" title="No wallet or private key is loaded. There is no live-execution control.">Live execution: DISABLED</span>
+  <button id="start" class="primary">Start</button>
+  <button id="stop">Stop</button>
+  <button id="report">Write report</button>
+  <span id="session" class="muted"></span>
+</header>
+<main>
+  <section class="wide">
+    <h2>Profit and loss — kept separate</h2>
+    <div class="cards">
+      <div class="card"><div class="muted">Quoted net (best route, latest cycle)</div><div class="big" id="q-now">–</div><div class="muted" id="q-now-route"></div></div>
+      <div class="card"><div class="muted">Quoted net (best ever this session)</div><div class="big" id="q-best">–</div><div class="muted" id="q-best-route"></div></div>
+      <div class="card"><div class="muted">Opportunities (independent / still qualifying on fresh quote)</div><div class="big" id="opps">–</div><div class="muted" id="bench"></div></div>
+      <div class="card"><div class="muted">Simulations (executed / proceeds = quote / total)</div><div class="big" id="sims">–</div><div class="muted">receiver code via eth_call, no funds</div></div>
+      <div class="card"><div class="muted">Realized wallet P&amp;L</div><div class="big">$0.00</div><div class="muted">no transactions sent — live execution disabled</div></div>
+    </div>
+  </section>
+  <section class="wide"><h2>Networks</h2><div class="scroll"><table id="chains"></table></div></section>
+  <section><h2>Active pairs and venues</h2><div class="scroll" id="pairs"></div></section>
+  <section><h2>Why routes did not trade</h2><div class="scroll"><table id="outcomes"></table></div></section>
+  <section class="wide"><h2>Opportunities</h2><div class="scroll"><table id="opptable"></table></div></section>
+  <section class="wide"><h2>Best route per chain — cost breakdown</h2><div id="best"></div></section>
+  <section class="wide"><h2>Simulation results</h2><div class="scroll"><table id="simtable"></table></div></section>
+  <section class="wide"><h2>Skipped pools, sizes and routes</h2><div class="scroll"><table id="skips"></table></div></section>
+  <section class="wide"><h2>Activity log</h2><div id="log"></div></section>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const usd = (x) => x === null || x === undefined ? "–" : `${x < 0 ? "-" : ""}$${Math.abs(x).toFixed(Math.abs(x) < 0.01 && x !== 0 ? 4 : 2)}`;
+const cls = (x) => x > 0 ? "pos" : x < 0 ? "neg" : "";
+
+async function post(path) { const r = await fetch(path, { method: "POST" }); return r.json(); }
+$("start").onclick = async () => { await post("/api/start"); refresh(); };
+$("stop").onclick = async () => { await post("/api/stop"); refresh(); };
+$("report").onclick = async () => { const r = await post("/api/report"); alert("Report written:\n" + r.files.join("\n")); };
+
+function addLog(l) {
+  const box = $("log");
+  const atBottom = box.scrollTop + box.clientHeight >= box.scrollHeight - 20;
+  const div = document.createElement("div");
+  div.className = "lv-" + l.level;
+  div.textContent = `${l.ts.slice(11, 19)} ${l.level.padEnd(11)} ${(l.chain || "").padEnd(9)} ${l.msg}`;
+  box.appendChild(div);
+  while (box.childNodes.length > 1500) box.removeChild(box.firstChild);
+  if (atBottom) box.scrollTop = box.scrollHeight;
+}
+
+function render(s) {
+  const running = !!s.running;
+  $("status").textContent = running ? "running" : "stopped";
+  $("status").className = "badge " + (running ? "on" : "off");
+  $("start").disabled = running; $("stop").disabled = !running;
+  $("session").textContent = s.sessionId ? `session ${s.sessionId} · started ${s.startedAt}` : "";
+  const chains = Object.entries(s.chains || {});
+
+  $("chains").innerHTML = "<tr><th>Chain</th><th>Cycles</th><th>Last block</th><th>Cycle ms</th><th>Live pools</th><th>Routes quoted (last / ever / total)</th><th>Quotes ok / failed</th><th>Status</th></tr>" +
+    chains.map(([n, c]) => `<tr><td>${esc(n)} <span class="muted">${c.chainId}</span></td><td class="num">${c.cycles}</td><td class="num">${esc(c.lastBlock ?? "–")}</td><td class="num">${c.lastCycleMs ?? "–"}</td><td class="num">${c.pools.length}</td><td class="num">${c.routesQuotedLastCycle} / ${c.routesQuotedEver} / ${c.routes}</td><td class="num">${c.quotesOk} / ${c.quotesFailed}</td><td>${c.lastError ? `<span class="neg">${esc(c.lastError)}</span>` : "ok"}</td></tr>`).join("");
+
+  $("pairs").innerHTML = chains.map(([n, c]) => `<p><b>${esc(n)}</b><br><span class="muted">pairs</span> ${esc(c.pairs.join(", "))}<br><span class="muted">venues</span> ${esc(c.venues.join(", "))}` +
+    (c.venueSkips.length ? `<br><span class="muted">venues skipped</span> ${c.venueSkips.map((v) => esc(`${v.id} (${v.reason})`)).join("; ")}` : "") + "</p>").join("");
+
+  $("outcomes").innerHTML = "<tr><th>Chain</th><th>Outcome (best size per route per cycle)</th><th>Count</th></tr>" +
+    chains.flatMap(([n, c]) => Object.entries(c.outcomeCounts).map(([k, v]) => `<tr><td>${esc(n)}</td><td>${esc(k)}</td><td class="num">${v}</td></tr>`)).join("");
+
+  let bestNow = null, bestEver = null;
+  for (const [, c] of chains) {
+    if (c.bestLastCycle?.best && (!bestNow || c.bestLastCycle.best.netUsd > bestNow.best.netUsd)) bestNow = c.bestLastCycle;
+    if (c.bestEver?.best && (!bestEver || c.bestEver.best.netUsd > bestEver.best.netUsd)) bestEver = c.bestEver;
+  }
+  $("q-now").innerHTML = bestNow ? `<span class="${cls(bestNow.best.netUsd)}">${usd(bestNow.best.netUsd)}</span>` : "–";
+  $("q-now-route").textContent = bestNow ? `${bestNow.routeId} · $${bestNow.best.sizeUsd.toLocaleString()}` : "";
+  $("q-best").innerHTML = bestEver ? `<span class="${cls(bestEver.best.netUsd)}">${usd(bestEver.best.netUsd)}</span>` : "–";
+  $("q-best-route").textContent = bestEver ? `${bestEver.routeId} · $${bestEver.best.sizeUsd.toLocaleString()}` : "";
+
+  const eps = [...(s.openEpisodes || []), ...(s.closedEpisodes || [])];
+  $("opps").textContent = `${eps.length} / ${eps.filter((e) => e.freshQuote?.qualifies).length}`;
+  $("bench").textContent = s.config ? `benchmark ${usd(s.config.benchmarkNetUsd)} per trade · target ${usd(s.config.dailyTargetUsd)}/day` : "";
+  const sims = s.simulations || [];
+  $("sims").textContent = `${sims.filter((x) => x.ok).length} / ${sims.filter((x) => x.proceedsMatchQuote).length} / ${sims.length}`;
+
+  $("opptable").innerHTML = "<tr><th>Chain</th><th>Route</th><th>First seen</th><th>Sightings</th><th>Best quoted net</th><th>Fresh quote</th><th>Simulation</th><th>State</th></tr>" +
+    (eps.length ? eps.map((e) => `<tr><td>${esc(e.chain)}</td><td><code>${esc(e.routeId)}</code></td><td>${esc(e.firstSeen.slice(11, 19))}</td><td class="num">${e.sightings}</td><td class="num">${usd(e.bestNetUsd)}</td><td>${e.freshQuote ? `${usd(e.freshQuote.netUsd)} ${e.freshQuote.qualifies ? "✔ qualifies" : esc("(" + (e.freshQuote.note || "") + ")")}` : "–"}</td><td>${e.simulation ? esc(e.simulation.ok ? "executed" : e.simulation.reason) : "–"}</td><td>${e.open ? "open" : "closed"}</td></tr>`).join("")
+      : `<tr><td colspan="8" class="muted">None yet. A route is an opportunity when its quoted net reaches the benchmark; repeat sightings of the same price gap count once.</td></tr>`);
+
+  $("best").innerHTML = chains.map(([n, c]) => {
+    const e = c.bestLastCycle; if (!e?.best) return `<p><b>${esc(n)}</b> <span class="muted">no route quoted yet</span></p>`;
+    const b = e.best;
+    return `<p><b>${esc(n)}</b> · <code>${esc(e.routeId)}</code> · block ${esc(e.block)} · <i>${esc(e.outcome)}</i></p>
+      <table><tr><th>Size</th><th>Borrowed</th><th>Leg 1 out</th><th>Leg 2 out</th><th>Gross</th><th>Premium</th><th>Gas (L1 part)</th><th>Net</th></tr>` +
+      e.sizes.map((s) => s.skip ? `<tr><td>$${s.sizeUsd.toLocaleString()}</td><td>${esc(s.borrowed)} ${esc(e.borrow)}</td><td colspan="6" class="muted">skipped: ${esc(s.skip)}</td></tr>`
+        : `<tr><td>$${s.sizeUsd.toLocaleString()}${s === b || s.sizeUsd === b.sizeUsd ? " ★" : ""}</td><td>${esc(s.borrowed)} ${esc(e.borrow)}</td><td>${esc(s.leg1Out)} ${esc(e.via)}</td><td>${esc(s.leg2Out)}</td><td class="${s.grossTokens?.startsWith("-") ? "neg" : "pos"}">${esc(s.grossTokens)}</td><td>${esc(s.premium)}</td><td class="num">${usd(s.gasUsd)} (${usd(s.l1Usd)})</td><td class="num ${cls(s.netUsd)}">${usd(s.netUsd)}</td></tr>`).join("") +
+      `</table><p class="muted">${esc(e.first.label)} → ${esc(e.second.label)}. Swap fees and price impact are inside the quoted outputs; premium and gas are the only costs added.</p>`;
+  }).join("");
+
+  $("simtable").innerHTML = "<tr><th>Time</th><th>Chain</th><th>Route</th><th>Purpose</th><th>Size</th><th>Result</th><th>Proceeds vs quote</th><th>Gas inside</th></tr>" +
+    (sims.length ? sims.slice().reverse().map((x) => `<tr><td>${esc(x.ts.slice(11, 19))}</td><td>${esc(x.chain)}</td><td><code>${esc(x.routeId)}</code></td><td>${esc(x.purpose)}</td><td>$${x.sizeUsd.toLocaleString()}</td><td>${x.ok ? `<span class="pos">executed, profit ${esc(x.simProfit)}</span>` : esc(x.reason)}</td><td>${x.proceedsMatchQuote === undefined ? "–" : x.proceedsMatchQuote ? "exact match" : `<span class="neg">${esc(x.simProceeds)} vs ${esc(x.quotedLeg2Out)}</span>`}</td><td class="num">${esc(x.gasUsedInside)}</td></tr>`).join("")
+      : `<tr><td colspan="8" class="muted">none yet</td></tr>`);
+
+  $("skips").innerHTML = "<tr><th>Chain</th><th>Reason</th><th>Count</th></tr>" +
+    chains.flatMap(([n, c]) => {
+      const pools = {}; for (const p of c.poolSkips) { const k = "pool: " + p.reason.replace(/\$[\d,]+ \/ \$[\d,]+/, "$X / $Y"); pools[k] = (pools[k] || 0) + 1; }
+      return [...Object.entries(pools), ...Object.entries(c.skipCounts)].map(([k, v]) => `<tr><td>${esc(n)}</td><td>${esc(k)}</td><td class="num">${v}</td></tr>`);
+    }).join("");
+}
+
+async function refresh() { try { render(await (await fetch("/api/state")).json()); } catch (e) { $("status").textContent = "dashboard offline"; } }
+(async () => {
+  for (const l of await (await fetch("/api/log")).json()) addLog(l);
+  const es = new EventSource("/api/events");
+  es.onmessage = (m) => addLog(JSON.parse(m.data));
+  refresh(); setInterval(refresh, 3000);
+})();
+</script>
+</body>
+</html>

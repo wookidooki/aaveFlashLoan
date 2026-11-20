@@ -1,0 +1,27 @@
+{
+  "name": "flashloan-arb-bot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.22.0 <25"
+  },
+  "scripts": {
+    "test": "hardhat test nodejs",
+    "compile": "hardhat build",
+    "typecheck": "hardhat build --quiet && tsc --noEmit",
+    "scan": "NODE_USE_ENV_PROXY=1 node src/cli.ts scan",
+    "dashboard": "NODE_USE_ENV_PROXY=1 node src/cli.ts dashboard",
+    "report": "node src/cli.ts report"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-network-helpers": "3.0.12",
+    "@nomicfoundation/hardhat-node-test-runner": "3.1.2",
+    "@nomicfoundation/hardhat-viem": "3.1.0",
+    "@nomicfoundation/hardhat-viem-assertions": "3.1.5",
+    "@types/node": "24.19.2",
+    "hardhat": "3.21.2",
+    "typescript": "7.0.2",
+    "viem": "2.57.16"
+  }
+}

@@ -1,0 +1,11 @@
+/node_modules
+/artifacts
+/cache
+/dist
+/types
+/coverage
+.env
+.env.*
+!.env.example
+# Runtime output: scan ledgers, logs and reports stay out of git.
+/data
