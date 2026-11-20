@@ -76,6 +76,7 @@ forge test --match-contract Fork -vv               # both fork tests (needs inte
 forge test --match-contract FlashArbForkArbitrum   # one chain only
 forge test --no-match-contract Fork                # offline tests only
 BASE_FORK_BLOCK=<n> ARBITRUM_FORK_BLOCK=<n> forge test   # same blocks every run
+forge coverage                                     # which contract lines the tests reach
 ```
 
 For a new fork test, call `vm.createSelectFork("base")` or `vm.createSelectFork("arbitrum")` (links are in `foundry.toml`).
