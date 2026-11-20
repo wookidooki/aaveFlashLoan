@@ -1,5 +1,8 @@
 # Flash Loan Arbitrage Bot (v2)
 
+[![Foundry](https://github.com/wookidooki/aaveFlashLoan/actions/workflows/foundry.yml/badge.svg)](https://github.com/wookidooki/aaveFlashLoan/actions/workflows/foundry.yml)
+[![Node](https://github.com/wookidooki/aaveFlashLoan/actions/workflows/node.yml/badge.svg)](https://github.com/wookidooki/aaveFlashLoan/actions/workflows/node.yml)
+
 A bot that watches many networks, exchanges and token pairs **all the time** for price gaps. When it finds a gap that is profitable after all fees, it can borrow the money with a **flash loan**, do the trades, pay the loan back, and keep the profit. All of this happens in one transaction.
 
 - **Networks:** Base and Arbitrum (you can add more in `config/chains.js`)
