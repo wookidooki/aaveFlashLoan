@@ -8,3 +8,6 @@ logs/
 out/
 cache_forge/
 broadcast/
+lcov.info
+coverage.txt
+coverage-html/
