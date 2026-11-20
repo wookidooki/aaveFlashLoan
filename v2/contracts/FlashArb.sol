@@ -146,13 +146,10 @@ contract FlashArb {
     }
 
     /// @notice Called by Aave during the flash loan.
-    function executeOperation(
-        address asset,
-        uint256 amount,
-        uint256 premium,
-        address initiator,
-        bytes calldata params
-    ) external returns (bool) {
+    function executeOperation(address asset, uint256 amount, uint256 premium, address initiator, bytes calldata params)
+        external
+        returns (bool)
+    {
         if (msg.sender != address(aavePool)) revert NotAavePool();
         if (initiator != address(this)) revert BadInitiator();
 
@@ -209,19 +206,22 @@ contract FlashArb {
 
         if (h.kind == KIND_V3) {
             _tstore(EXPECTED_POOL_SLOT, uint256(uint160(h.pool)));
-            (int256 a0, int256 a1) = IV3Pool(h.pool).swap(
-                address(this),
-                zeroForOne,
-                int256(amountIn),
-                zeroForOne ? MIN_SQRT_RATIO_PLUS_ONE : MAX_SQRT_RATIO_MINUS_ONE,
-                abi.encode(h.tokenIn)
-            );
+            (int256 a0, int256 a1) = IV3Pool(h.pool)
+                .swap(
+                    address(this),
+                    zeroForOne,
+                    int256(amountIn),
+                    zeroForOne ? MIN_SQRT_RATIO_PLUS_ONE : MAX_SQRT_RATIO_MINUS_ONE,
+                    abi.encode(h.tokenIn)
+                );
             _tstore(EXPECTED_POOL_SLOT, 0);
             // The pool stopped early (out of liquidity). Do not leave tokens behind.
             if (uint256(zeroForOne ? a0 : a1) != amountIn) revert PartialFill();
         } else if (h.kind == KIND_V2 || h.kind == KIND_SOLIDLY) {
             // Send first, then price the swap from what the pool really received.
             _safeTransfer(h.tokenIn, h.pool, amountIn);
+            // The reserves timestamp is not needed.
+            // slither-disable-next-line unused-return
             (uint256 r0, uint256 r1,) = IReserves(h.pool).getReserves();
             (uint256 rIn, uint256 rOut) = zeroForOne ? (r0, r1) : (r1, r0);
             uint256 realIn = IERC20(h.tokenIn).balanceOf(h.pool) - rIn;

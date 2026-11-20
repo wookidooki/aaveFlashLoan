@@ -3,3 +3,8 @@ artifacts/
 cache/
 logs/
 .env
+
+# Foundry
+out/
+cache_forge/
+broadcast/

@@ -1,0 +1,19 @@
+# Foundry config. Sources stay in contracts/ so the Node scripts and Hardhat keep working.
+[profile.default]
+src = "contracts"
+test = "test/foundry"
+script = "script"
+out = "out"
+cache_path = "cache_forge" # Hardhat already uses cache/
+libs = ["lib"]
+solc_version = "0.8.28"
+evm_version = "cancun"
+optimizer = true
+optimizer_runs = 1000 # same as scripts/compile.js
+
+[rpc_endpoints]
+base = "https://mainnet.base.org"
+arbitrum = "https://arb1.arbitrum.io/rpc"
+
+[fmt]
+line_length = 120

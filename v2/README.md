@@ -1,5 +1,8 @@
 # Flash Loan Arbitrage Bot (v2)
 
+[![Foundry](https://github.com/wookidooki/aaveFlashLoan/actions/workflows/foundry.yml/badge.svg)](https://github.com/wookidooki/aaveFlashLoan/actions/workflows/foundry.yml)
+[![Node](https://github.com/wookidooki/aaveFlashLoan/actions/workflows/node.yml/badge.svg)](https://github.com/wookidooki/aaveFlashLoan/actions/workflows/node.yml)
+
 A bot that watches many networks, exchanges and token pairs **all the time** for price gaps. When it finds a gap that is profitable after all fees, it can borrow the money with a **flash loan**, do the trades, pay the loan back, and keep the profit. All of this happens in one transaction.
 
 - **Networks:** Base and Arbitrum (you can add more in `config/chains.js`)
@@ -52,6 +55,41 @@ node scripts/check-quotes.js  # live check: quotes match real trades, and no fal
 ```
 
 The fork test creates a real price gap on a local copy of Base. It then checks that the bot finds the gap, checks it, trades it, and that the wallet gets the profit.
+
+### Foundry (Solidity tests)
+
+Foundry reads the same `contracts/` folder. Solidity tests go in `test/foundry/`.
+
+```bash
+git submodule update --init   # first time only: gets lib/forge-std
+forge build
+forge test
+```
+
+The fork tests do the same checks as `npm run test:fork`, on a local copy of Base and of Arbitrum, in about 15 seconds. Shared checks are in `test/foundry/FlashArbForkShared.sol`. Each chain file adds its own pools:
+
+- `FlashArb.fork.t.sol` (Base): Uniswap v3, Aerodrome CL, Aerodrome
+- `FlashArb.fork.arbitrum.t.sol` (Arbitrum): Uniswap v3, Sushi v3, PancakeSwap v3, Sushi v2
+
+```bash
+forge test --match-contract Fork -vv               # both fork tests (needs internet)
+forge test --match-contract FlashArbForkArbitrum   # one chain only
+forge test --no-match-contract Fork                # offline tests only
+BASE_FORK_BLOCK=<n> ARBITRUM_FORK_BLOCK=<n> forge test   # same blocks every run
+```
+
+For a new fork test, call `vm.createSelectFork("base")` or `vm.createSelectFork("arbitrum")` (links are in `foundry.toml`).
+
+### Slither (code checker)
+
+[Slither](https://github.com/crytic/slither) looks for common bugs in the contracts. Settings are in `slither.config.json`.
+
+```bash
+pip install slither-analyzer==0.11.6
+slither . --fail-medium   # fails on medium or high findings, like CI
+```
+
+Checked findings that are not bugs are marked in the code with `// slither-disable-next-line <check>` and a short reason.
 
 ## Going live (real trades)
 
