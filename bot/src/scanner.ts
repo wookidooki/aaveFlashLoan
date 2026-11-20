@@ -52,6 +52,8 @@ export interface SizeEval {
   l1Usd?: number;
   netUsd?: number;
   skip?: string;
+  /** not quoted (or quote failed), but provably unprofitable because a smaller size already loses */
+  dominated?: boolean;
 }
 
 export interface RouteEval {
@@ -130,6 +132,8 @@ interface ChainRuntime {
   routesEvaluatedEver: Set<string>;
   boundChecks: number;
   boundViolations: number;
+  quotesDominated: number;
+  quotesCannotFill: number;
   quotesOk: number;
   quotesFailed: number;
   skipCounts: Map<string, number>;
@@ -177,6 +181,8 @@ export class Scanner extends EventEmitter {
         routesEvaluatedEver: new Set(),
         boundChecks: 0,
         boundViolations: 0,
+        quotesDominated: 0,
+        quotesCannotFill: 0,
         quotesOk: 0,
         quotesFailed: 0,
         skipCounts: new Map(),
@@ -429,6 +435,22 @@ export class Scanner extends EventEmitter {
       }
     });
 
+    // Size dominance. A route's round-trip output per unit of input never rises with size (both legs
+    // are concave and start at zero), and the premium is proportional, so once a smaller size fails
+    // to return principal + premium, every larger size of that route loses too. Quote failures at
+    // those larger sizes are not coverage gaps; they are marked dominated instead of failed.
+    for (const ev of evals) {
+      let belowBreakEven = false;
+      for (const size of [...ev.sizes].sort((a, b) => a.sizeUsd - b.sizeUsd)) {
+        if (size.leg2Out !== undefined) {
+          if (size.leg2Out < size.amount + size.premium) belowBreakEven = true;
+        } else if (belowBreakEven && size.skip && /^leg[12]/.test(size.skip)) {
+          size.skip = `dominated: a smaller size already fails to cover principal + premium (quote here: ${size.skip})`;
+          size.dominated = true;
+        }
+      }
+    }
+
     // Screening L1 fee: computed once per cycle from a representative route's real calldata
     // (all 2-leg routes encode to the same length); recomputed exactly for routes that matter.
     let screeningL1: GasCost | undefined;
@@ -596,8 +618,15 @@ export class Scanner extends EventEmitter {
         }
       }
       if (ev.skip) bump(rt.skipCounts, `route: ${normalizeReason(ev.skip)}`);
-      for (const s of ev.sizes) if (s.skip) bump(rt.skipCounts, `size: ${normalizeReason(s.skip)}`);
-      rt.quotesFailed += ev.sizes.filter((s) => s.skip?.startsWith("leg")).length;
+      for (const s of ev.sizes) {
+        if (s.dominated) bump(rt.skipCounts, "size: dominated (a smaller size already fails to cover principal + premium)");
+        else if (s.skip) bump(rt.skipCounts, `size: ${normalizeReason(s.skip)}`);
+      }
+      const legFails = ev.sizes.filter((s) => s.skip?.startsWith("leg"));
+      const illiquid = legFails.filter((s) => LIQUIDITY_LIMITED.test(s.skip!)).length;
+      rt.quotesCannotFill += illiquid;
+      rt.quotesFailed += legFails.length - illiquid;
+      rt.quotesDominated += ev.sizes.filter((s) => s.dominated).length;
       rt.quotesOk += ev.sizes.filter((s) => s.leg2Out !== undefined).length;
       if (ev.best) {
         quotedRoutes++;
@@ -831,6 +860,8 @@ export class Scanner extends EventEmitter {
         routesEvaluatedEver: rt.routesEvaluatedEver.size,
         boundChecks: rt.boundChecks,
         boundViolations: rt.boundViolations,
+        quotesDominated: rt.quotesDominated,
+        quotesCannotFill: rt.quotesCannotFill,
         quotesOk: rt.quotesOk,
         quotesFailed: rt.quotesFailed,
         skipCounts: Object.fromEntries([...rt.skipCounts].sort((a, b) => b[1] - a[1])),
@@ -862,6 +893,14 @@ export class Scanner extends EventEmitter {
     };
   }
 }
+
+/**
+ * Quote failures that mean "this pool cannot carry this size": v4 NotEnoughLiquidity, partial fills
+ * seen by the injected quoter, quotes needing more than the gas cap (hundreds of ticks crossed),
+ * and QuoterV2's "Unexpected error", which on inspection is the pool's swap stopping short of the
+ * exact input (re-running those through the injected quoter shows a partial fill).
+ */
+const LIQUIDITY_LIMITED = /NotEnoughLiquidity|did not fill the exact input|needs more than \d+M gas|Unexpected error/;
 
 /** Collapse amounts in a reason so identical causes aggregate; keeps pool labels like "uniswap-v3:500". */
 function normalizeReason(r: string): string {

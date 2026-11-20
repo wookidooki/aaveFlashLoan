@@ -83,13 +83,15 @@ export function buildReport(sessions: Summary[], ledger: any[], title: string): 
     `| Chains | ${chainNames.join(", ")} |`,
   );
   let routesQuoted = 0, routes = 0, quotesOk = 0, quotesFailed = 0, cycles = 0;
-  let routesEvaluated = 0, boundChecks = 0, boundViolations = 0;
+  let routesEvaluated = 0, boundChecks = 0, boundViolations = 0, quotesDominated = 0, quotesCannotFill = 0;
   let best: any = null;
   for (const s of sessions)
     for (const c of Object.values<any>(s.chains)) {
       routesEvaluated += c.routesEvaluatedEver ?? c.routesQuotedEver;
       boundChecks += c.boundChecks ?? 0;
       boundViolations += c.boundViolations ?? 0;
+      quotesDominated += c.quotesDominated ?? 0;
+      quotesCannotFill += c.quotesCannotFill ?? 0;
       routesQuoted += c.routesQuotedEver;
       routes += c.routes;
       quotesOk += c.quotesOk;
@@ -101,7 +103,7 @@ export function buildReport(sessions: Summary[], ledger: any[], title: string): 
     `| Scan cycles (all chains) | ${cycles} |`,
     `| Routes configured / evaluated at least once / fully quoted at least once | ${routes} / ${routesEvaluated} / ${routesQuoted} |`,
     `| Marginal-price bound: soundness checks on fully quoted sizes / violations | ${boundChecks} / ${boundViolations} |`,
-    `| Size-level quotes completed / failed | ${quotesOk} / ${quotesFailed} |`,
+    `| Size-level quotes: completed / pool cannot fill the size / dominated (provably unprofitable) / other failures | ${quotesOk} / ${quotesCannotFill} / ${quotesDominated} / ${quotesFailed} |`,
     `| Independent opportunities (>= benchmark on first quote; repeat sightings of one gap count once) | ${allEpisodes.length} |`,
     `| ...still qualifying on a fresh quote at a newer block | ${fresh.length} |`,
     `| Best quoted net (any route, any size) | ${best ? usd(best.best.netUsd) : "n/a"} |`,

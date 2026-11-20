@@ -85,6 +85,7 @@ export function describeRevert(abi: Abi, data: Hex): string {
     const d = decodeErrorResult({ abi, data });
     if (d.errorName === "UnexpectedRevertBytes") {
       const inner = (d.args as readonly Hex[])[0];
+      if (!inner || inner === "0x") return "UnexpectedRevertBytes -> pool swap reverted without data";
       try {
         return `UnexpectedRevertBytes -> ${decodeErrorResult({ abi: KNOWN_INNER_ERRORS, data: inner }).errorName}`;
       } catch {
@@ -136,7 +137,9 @@ export async function cappedMulticallAt(
         const c = slice[i];
         if (r.outOfBudget) return { ok: false, error: "batch gas budget exhausted" };
         if (!r.success) {
-          if (r.ret === "0x" && r.gasUsed >= (gasCap * 63n) / 64n) {
+          // Quoters catch their inner swap's out-of-gas and re-revert ("Unexpected error"), so judge
+          // by gas consumed, not by the return data.
+          if (r.gasUsed >= (gasCap * 63n) / 64n) {
             return { ok: false, error: `needs more than ${gasCap / 1_000_000n}M gas (crosses too many ticks at this size)` };
           }
           return { ok: false, error: describeRevert(c.abi, r.ret) };
