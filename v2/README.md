@@ -107,6 +107,10 @@ npm run verify-config # checks every address on-chain
 4. **Full check:** run the real `FlashArb` trade the same way, including the flash loan (Morpho or Aave), every swap and the repayment. Then subtract gas.
 5. **Trade (live mode only):** simulate once more with your deployed contract, then send the transaction.
 
+## Planned work
+
+See [TODO.md](TODO.md).
+
 ## Files
 
 | File | What it is |
