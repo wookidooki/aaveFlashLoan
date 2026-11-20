@@ -85,8 +85,15 @@ async function runChunk(client: PublicClient, slice: CallSpec[], blockNumber: bi
 }
 
 export function shortError(e: unknown): string {
-  const msg = (e as any)?.shortMessage ?? (e as any)?.message ?? String(e);
-  return String(msg).split("\n")[0].slice(0, 160);
+  const msg = String((e as any)?.shortMessage ?? (e as any)?.message ?? String(e)).split("\n")[0];
+  // viem puts a decoded revert reason on a nested cause; surface it instead of the generic header.
+  let cur: any = e;
+  for (let i = 0; cur && i < 8; i++) {
+    if (typeof cur.reason === "string" && cur.reason) return `${msg.replace(/ with the following reason:$/, "")}: ${cur.reason}`.slice(0, 200);
+    if (cur.data?.errorName) return `${msg.replace(/ with the following reason:$/, "")}: ${cur.data.errorName}`.slice(0, 200);
+    cur = cur.cause;
+  }
+  return msg.slice(0, 200);
 }
 
 export async function rawCall(

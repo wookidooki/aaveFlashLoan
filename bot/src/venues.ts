@@ -236,6 +236,15 @@ export async function quoteMany(
     }
   });
   const res: CallResult[] = remote.length ? await multicallAt(client, remote.map((r) => r.call), blockNumber, 10) : [];
+  // Calls sharing one eth_call share its gas cap; a heavy quote can starve its neighbours, which the
+  // quoter reports as "Unexpected error". Retry every failed quote on its own before believing it.
+  const failed = res.map((r, k) => (r.ok ? -1 : k)).filter((k) => k >= 0);
+  if (failed.length) {
+    const retry = await multicallAt(client, failed.map((k) => remote[k].call), blockNumber, 1);
+    failed.forEach((k, j) => {
+      res[k] = retry[j].ok ? retry[j] : { ok: false, error: `${retry[j].error} (also alone)` };
+    });
+  }
   remote.forEach(({ i }, k) => {
     const r = res[k];
     const v = reqs[i].pool.venue;
