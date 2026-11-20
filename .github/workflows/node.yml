@@ -20,8 +20,6 @@ defaults:
 
 jobs:
   # Unit tests, no network. npm ci also compiles the contracts (postinstall).
-  # The Hardhat fork tests (npm run test:fork) are not run here: they take ~4 min,
-  # and the Foundry workflow already runs the same fork checks.
   test:
     name: npm test (Node ${{ matrix.node }})
     runs-on: ubuntu-latest
@@ -43,3 +41,26 @@ jobs:
 
       - name: Unit tests
         run: npm test
+
+  # Hardhat fork tests on a local copy of Base: FlashArb, plus the full bot
+  # (scanner finds a gap, checks it and trades it). Takes about 3 minutes.
+  # Uses the public Base RPC (FORK_URL in hardhat.config.cjs), so a busy RPC can make it fail.
+  fork:
+    name: npm run test:fork (Base)
+    runs-on: ubuntu-latest
+    needs: test
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: v2/package-lock.json
+
+      - name: Install (also compiles contracts)
+        run: npm ci
+
+      - name: Fork tests
+        run: npm run test:fork

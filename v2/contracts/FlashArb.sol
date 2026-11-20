@@ -211,6 +211,8 @@ contract FlashArb {
         }
 
         if (h.kind == KIND_V2) {
+            // The reserves timestamp is not needed.
+            // slither-disable-next-line unused-return
             (uint256 r0, uint256 r1,) = IV2Pair(h.pool).getReserves();
             (uint256 rIn, uint256 rOut) = zeroForOne ? (r0, r1) : (r1, r0);
             uint256 inWithFee = amountIn * (10000 - h.feeBps);

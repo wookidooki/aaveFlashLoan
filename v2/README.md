@@ -77,6 +77,17 @@ BASE_FORK_BLOCK=<n> ARBITRUM_FORK_BLOCK=<n> forge test   # same blocks every run
 
 For a new fork test, call `vm.createSelectFork("base")` or `vm.createSelectFork("arbitrum")` (links are in `foundry.toml`).
 
+### Slither (code checker)
+
+[Slither](https://github.com/crytic/slither) looks for common bugs in the contracts. Settings are in `slither.config.json`.
+
+```bash
+pip install slither-analyzer==0.11.6
+slither . --fail-medium   # fails on medium or high findings, like CI
+```
+
+Checked findings that are not bugs are marked in the code with `// slither-disable-next-line <check>` and a short reason.
+
 ## Going live (real trades)
 
 Only do this after watch-only mode shows verified chances.

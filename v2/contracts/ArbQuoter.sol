@@ -68,6 +68,8 @@ contract ArbQuoter {
         bool zeroForOne = h.tokenIn < h.tokenOut;
 
         if (h.kind == 0) {
+            // The reserves timestamp is not needed.
+            // slither-disable-next-line unused-return
             try IV2PairQ(h.pool).getReserves() returns (uint112 r0, uint112 r1, uint32) {
                 (uint256 rIn, uint256 rOut) = zeroForOne ? (uint256(r0), uint256(r1)) : (uint256(r1), uint256(r0));
                 uint256 inWithFee = amountIn * (10000 - h.feeBps);
@@ -90,6 +92,8 @@ contract ArbQuoter {
         if (h.kind == 2) {
             if (amountIn > uint256(type(int256).max)) return 0;
             uint256 g0 = gasleft();
+            // The swap always reverts (the callback reverts with the amounts), so it never returns.
+            // slither-disable-next-line unused-return
             try IV3PoolQ(h.pool)
                 .swap(
                     address(this),
