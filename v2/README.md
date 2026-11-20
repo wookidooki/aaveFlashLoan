@@ -63,7 +63,15 @@ forge build
 forge test
 ```
 
-For a fork test, call `vm.createSelectFork("base")` or `vm.createSelectFork("arbitrum")` (links are in `foundry.toml`).
+`test/foundry/FlashArb.fork.t.sol` does the same checks as `npm run test:fork`, on a local copy of Base, in about 15 seconds:
+
+```bash
+forge test --match-contract FlashArbForkBase -vv   # fork test only (needs internet)
+forge test --no-match-contract Fork                # offline tests only
+BASE_FORK_BLOCK=<number> forge test                # same block every run
+```
+
+For a new fork test, call `vm.createSelectFork("base")` or `vm.createSelectFork("arbitrum")` (links are in `foundry.toml`).
 
 ## Going live (real trades)
 
