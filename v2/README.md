@@ -53,6 +53,18 @@ node scripts/check-quotes.js  # live check: quotes match real trades, and no fal
 
 The fork test creates a real price gap on a local copy of Base. It then checks that the bot finds the gap, checks it, trades it, and that the wallet gets the profit.
 
+### Foundry (Solidity tests)
+
+Foundry reads the same `contracts/` folder. Solidity tests go in `test/foundry/`.
+
+```bash
+git submodule update --init   # first time only: gets lib/forge-std
+forge build
+forge test
+```
+
+For a fork test, call `vm.createSelectFork("base")` or `vm.createSelectFork("arbitrum")` (links are in `foundry.toml`).
+
 ## Going live (real trades)
 
 Only do this after watch-only mode shows verified chances.
