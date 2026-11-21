@@ -39,6 +39,7 @@ npm run verify         # read-only: simulate one live route through every venue;
 npm run replay -- --session ID   # read-only: re-quote each opportunity block by block to measure its lifetime
 npm run competitors -- --minutes 60   # read-only: other bots' round trips through watched pools, profit and timing
 npm run paper -- --chains base --minutes 30   # paper trading: react block by block, decide, judge; nothing is sent
+npm run verify-local -- --chains base   # read-only: local exact quotes must equal on-chain quoters at one block
 npm run dashboard      # operator view at http://127.0.0.1:8787 (read-only)
 npm run report -- --date YYYY-MM-DD                   # writes data/reports/
 ```
@@ -68,7 +69,8 @@ proxy (the npm scripts set it).
   quote its own gas cap.
 - `contracts/mocks/` — test doubles for the v3 receiver tests.
 - `src/` — scanner (`scanner.ts`), venue adapters (`venues.ts`), Aave reads (`aave.ts`), gas and L1
-  fees (`gas.ts`), exact quote math (`quote/`), simulation encode/decode (`sim/`), ledger, report,
+  fees (`gas.ts`), exact quote math (`quote/`, incl. a bigint port of the Uniswap v3 swap math in
+  `quote/v3math.ts` used by `localpool.ts` for exact off-chain quotes), simulation encode/decode (`sim/`), ledger, report,
   dashboard, CLI.
 - `config/scan.json` — chains, assets, pairs, venues, loan sizes, thresholds. Add coverage here.
 - `data/` — runtime output (ledger, sessions, reports). Gitignored; never commit scan results.

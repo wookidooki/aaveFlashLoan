@@ -66,6 +66,23 @@ if (command === "scan") {
   }
   console.log(rows.filter((r) => r.rec?.proceedsMatchQuote).length + "/" + rows.length + " venues verified; " + bad + " mismatches");
   process.exit(bad ? 1 : 0);
+} else if (command === "verify-local") {
+  // Local exact quotes vs on-chain quoters at one block (read-only).
+  const { verifyLocal } = await import("./verifyLocal.ts");
+  const cfg = loadConfig(values.config, chains ?? ["base"]);
+  const scanner = new Scanner(cfg);
+  let bad = 0;
+  for (const c of cfg.chains) {
+    const { block, rows, examples } = await verifyLocal(scanner, c.name);
+    console.log(`${c.name} @${block}`);
+    for (const r of rows) {
+      bad += r.mismatch;
+      const na = Object.entries(r.localUnavailable).map(([k, v]) => `${k} ${v}`).join("; ");
+      console.log(`  ${r.venue.padEnd(28)} exact ${String(r.exact).padStart(4)}  mismatch ${String(r.mismatch).padStart(3)}${r.mismatch ? ` (max ${r.maxDiffBps.toFixed(3)} bps)` : ""}  rpc failed ${r.rpcFailed}${na ? `  | not local: ${na}` : ""}`);
+    }
+    for (const e of examples) console.log("  example: " + e);
+  }
+  process.exit(bad ? 1 : 0);
 } else if (command === "paper") {
   // Paper trading: react to swaps block by block, decide, then judge each decision. Nothing is sent.
   const { PaperTrader, paperMarkdown } = await import("./paper.ts");
