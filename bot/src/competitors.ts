@@ -38,6 +38,16 @@ export interface ArbTx {
   /** a leg went through a native-ETH v4 pool: ETH moves are not ERC20 transfers, so profit is incomplete */
   nativeLeg: boolean;
   status: string;
+  /** transactions between the latest earlier swap on one of these pools in the same block and this one */
+  triggerGap?: number;
+  /** priority fee above the block base fee */
+  tipGwei: number;
+  tipUsd: number;
+  gasUsed: number;
+  /** largest amount sent into a watched pool, USD */
+  sizeUsd: number;
+  /** where the trading capital came from, judged from transfers into the bot */
+  capital: string;
 }
 
 export interface CompetitorReport {
@@ -93,7 +103,7 @@ async function getLogsChunked(client: PublicClient, params: any, from: bigint, t
 }
 
 export async function analyseCompetitors(scanner: Scanner, chain: string, minutes: number, maxReceipts = 1500): Promise<CompetitorReport> {
-  const { client, pools, decimals, market } = await scanner.poolsFor(chain);
+  const { client, pools, decimals, market, aTokens } = await scanner.poolsFor(chain);
   const head = (await client.getBlockNumber()) - 1n;
   const [bHead, bPast] = await Promise.all([client.getBlock({ blockNumber: head }), client.getBlock({ blockNumber: head - 1000n })]);
   const secPerBlock = Number(bHead.timestamp - bPast.timestamp) / 1000;
@@ -169,6 +179,19 @@ export async function analyseCompetitors(scanner: Scanner, chain: string, minute
   };
   const ethUsd = Number(market.assets.get(scanner.cfg.chains.find((c) => c.name === chain)!.assets[scanner.cfg.chains.find((c) => c.name === chain)!.gasToken])!.priceUsd8) / 1e8;
 
+  const baseFees = new Map<bigint, Promise<bigint>>();
+  const baseFeeAt = (b: bigint) => {
+    if (!baseFees.has(b)) baseFees.set(b, client.getBlock({ blockNumber: b }).then((x) => x.baseFeePerGas ?? 0n));
+    return baseFees.get(b)!;
+  };
+  const watched = new Set(pools.map((p) => p.address.toLowerCase()));
+  const lenders = new Map<string, string>([
+    ...[...aTokens.values()].map((a) => [a.toLowerCase(), "Aave flash loan"] as [string, string]),
+    ["0xba12222222228d8ba445958a75a0704d566bf2c8", "Balancer v2 flash loan"],
+    ["0xba1333333333a1ba1108e8412f11850a5c319ba9", "Balancer v3 flash loan"],
+    ["0xbbbbbbbbbb9cc5e90e3b3af64bdaf62c37eeffcb", "Morpho flash loan"],
+  ]);
+
   const arbs = await mapLimit(sample, 6, async (c): Promise<ArbTx> => {
     const [rc, tx] = await Promise.all([
       client.request({ method: "eth_getTransactionReceipt", params: [c.hash] } as any) as Promise<any>,
@@ -176,6 +199,8 @@ export async function analyseCompetitors(scanner: Scanner, chain: string, minute
     ]);
     const parties = new Set([tx.from.toLowerCase(), (tx.to ?? zeroAddress).toLowerCase()]);
     const flows = new Map<Address, bigint>();
+    let sizeUsd = 0;
+    let capital = "own funds / other";
     for (const l of rc.logs as any[]) {
       if (l.topics[0] !== TRANSFER || l.topics.length !== 3) continue;
       const from = ("0x" + l.topics[1].slice(26)).toLowerCase();
@@ -184,7 +209,20 @@ export async function analyseCompetitors(scanner: Scanner, chain: string, minute
       const token = getAddress(l.address);
       if (parties.has(to)) flows.set(token, (flows.get(token) ?? 0n) + amt);
       if (parties.has(from)) flows.set(token, (flows.get(token) ?? 0n) - amt);
+      if (lenders.has(from) && !watched.has(to)) capital = lenders.get(from)!;
+      // Trade size: the largest amount sent into a watched pool.
+      if (watched.has(to)) {
+        const p = price(token);
+        if (p) sizeUsd = Math.max(sizeUsd, (Number(amt) / 10 ** p.dec) * p.usd);
+      }
     }
+    // Reaction: transactions between the latest earlier swap on one of these pools and this one.
+    const earlier = c.pools.flatMap((p) => (firstSwapIndex.get(`${c.block}|${p.id}`) ?? []).filter((i) => i < c.index));
+    const triggerGap = earlier.length ? c.index - Math.max(...earlier) : undefined;
+    const baseFee = await baseFeeAt(c.block);
+    const effective = BigInt(rc.effectiveGasPrice ?? 0);
+    const tipWei = effective > baseFee ? effective - baseFee : 0n;
+    const gasUsed = BigInt(rc.gasUsed);
     let profitUsd = 0;
     let unpriced = 0;
     for (const [token, amt] of flows) {
@@ -215,6 +253,12 @@ export async function analyseCompetitors(scanner: Scanner, chain: string, minute
       unpricedTokens: unpriced,
       nativeLeg: c.pools.some((p) => p.native),
       status: rc.status === "0x1" ? "success" : "reverted",
+      triggerGap,
+      tipGwei: Number(tipWei) / 1e9,
+      tipUsd: (Number(tipWei * gasUsed) / 1e18) * ethUsd,
+      gasUsed: Number(gasUsed),
+      sizeUsd,
+      capital,
     };
   });
   return { chain, fromBlock, toBlock: head, minutes, swapTxs: byTx.size, arbTxs: candidates.length, analysed: arbs.length, arbs };
@@ -222,6 +266,47 @@ export async function analyseCompetitors(scanner: Scanner, chain: string, minute
 
 const usd = (x: number) => `${x < 0 ? "-" : ""}$${Math.abs(x).toFixed(Math.abs(x) < 1 ? 4 : 2)}`;
 const median = (xs: number[]) => (xs.length ? [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)] : NaN);
+
+const pct = (n: number, d: number) => (d ? `${Math.round((100 * n) / d)}%` : "n/a");
+
+/** How the bots win: reaction distance, priority fee, size, capital, gas — overall and per bot. */
+function playbook(arbs: ArbTx[]): string[] {
+  const n = arbs.length;
+  const gap = (a: ArbTx) => a.triggerGap;
+  const bucket = (xs: ArbTx[], f: (a: ArbTx) => boolean) => pct(xs.filter(f).length, xs.length);
+  const mix = (xs: ArbTx[]) => {
+    const m = new Map<string, number>();
+    for (const a of xs) m.set(a.capital, (m.get(a.capital) ?? 0) + 1);
+    return [...m].sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${pct(v, xs.length)}`).join(", ");
+  };
+  const L = [
+    "How they win (successful round trips):",
+    "",
+    "| Measure | Value |",
+    "|---|---|",
+    `| Landed right after the swap that opened the gap (next tx) | ${bucket(arbs, (a) => gap(a) === 1)} |`,
+    `| 2-5 txs after it / more than 5 after / no earlier swap in that block | ${bucket(arbs, (a) => gap(a) !== undefined && gap(a)! >= 2 && gap(a)! <= 5)} / ${bucket(arbs, (a) => (gap(a) ?? 0) > 5)} / ${bucket(arbs, (a) => gap(a) === undefined)} |`,
+    `| Priority fee: median / 90th percentile (gwei) | ${median(arbs.map((a) => a.tipGwei)).toPrecision(3)} / ${[...arbs.map((a) => a.tipGwei)].sort((a, b) => a - b)[Math.floor(n * 0.9)]?.toPrecision(3) ?? "n/a"} |`,
+    `| Priority fee paid per trade: median / max (USD) | ${usd(median(arbs.map((a) => a.tipUsd)))} / ${n ? usd(Math.max(...arbs.map((a) => a.tipUsd))) : "n/a"} |`,
+    `| Trade size: median (USD); under $100 / $100-1k / $1k-10k / over $10k | ${usd(median(arbs.map((a) => a.sizeUsd)))}; ${bucket(arbs, (a) => a.sizeUsd < 100)} / ${bucket(arbs, (a) => a.sizeUsd >= 100 && a.sizeUsd < 1000)} / ${bucket(arbs, (a) => a.sizeUsd >= 1000 && a.sizeUsd < 10000)} / ${bucket(arbs, (a) => a.sizeUsd >= 10000)} |`,
+    `| Capital source | ${mix(arbs)} |`,
+    `| Gas used: median | ${Math.round(median(arbs.map((a) => a.gasUsed)))} |`,
+    "",
+    "Per bot:",
+    "",
+    "| Contract | Trades | Net | Next-tx reaction | Median tip (gwei / $) | Median size | Capital | Median gas |",
+    "|---|---|---|---|---|---|---|---|",
+  ];
+  const byBot = new Map<string, ArbTx[]>();
+  for (const a of arbs) byBot.set((a.to ?? "creation").toLowerCase(), [...(byBot.get((a.to ?? "creation").toLowerCase()) ?? []), a]);
+  for (const [bot, xs] of [...byBot].sort((a, b) => b[1].length - a[1].length).slice(0, 10)) {
+    L.push(
+      `| \`${bot}\` | ${xs.length} | ${usd(xs.filter((a) => !a.nativeLeg).reduce((s, a) => s + a.netUsd, 0))} | ${bucket(xs, (a) => gap(a) === 1)} | ` +
+        `${median(xs.map((a) => a.tipGwei)).toPrecision(3)} / ${usd(median(xs.map((a) => a.tipUsd)))} | ${usd(median(xs.map((a) => a.sizeUsd)))} | ${mix(xs)} | ${Math.round(median(xs.map((a) => a.gasUsed)))} |`,
+    );
+  }
+  return L;
+}
 
 export function competitorMarkdown(r: CompetitorReport, symbols: Map<Address, string>): string {
   const okAll = r.arbs.filter((a) => a.status === "success");
@@ -285,6 +370,7 @@ export function competitorMarkdown(r: CompetitorReport, symbols: Map<Address, st
     ...[...ok].sort((a, b) => b.netUsd - a.netUsd).slice(0, 10).map((a) => `| ${a.block} | \`${a.hash.slice(0, 18)}…\` | ${a.pools.join(" + ")} | ${usd(a.netUsd)} | ${usd(a.gasUsd)} | ${a.sameBlockBackrun ? "yes" : "no"} |`),
     "",
   ];
+  L.push(...playbook(okAll), "");
   if (ok.some((a) => a.unpricedTokens)) L.push(`Note: ${ok.filter((a) => a.unpricedTokens).length} trades also moved tokens without an Aave price; those amounts are not counted.`, "");
   return L.join("\n");
 }

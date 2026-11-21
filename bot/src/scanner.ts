@@ -1084,7 +1084,7 @@ export class Scanner extends EventEmitter {
     const block = (await rt.client.getBlockNumber()) - 1n;
     if (!rt.pools.length) await this.refreshPools(rt, block);
     const market = await readMarketState(rt.client, rt.market!, [...new Set(Object.values(rt.cfg.assets))], block);
-    return { client: rt.client, pools: rt.pools, decimals: rt.decimals, symbols: rt.symbols, market, block, cfg: rt.cfg };
+    return { client: rt.client, pools: rt.pools, decimals: rt.decimals, symbols: rt.symbols, market, block, cfg: rt.cfg, aTokens: rt.market!.aTokens };
   }
 
   // ---------------------------------------------------------------- reporting
