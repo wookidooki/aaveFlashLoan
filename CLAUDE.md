@@ -5,7 +5,8 @@
 A flash-loan-funded arbitrage bot. Aave supplies the trading principal; the operator's own funds
 cover gas only. Each candidate is one atomic round trip on one chain that borrows an asset and ends
 in that same asset. The aim is to measure whether repeatable net profit exists after all costs
-(benchmark: $0.50 net per trade; longer-term target: $100/day). A scan that finds nothing is a valid
+(any trade with positive net after all costs qualifies — `minNetUsd` in `config/scan.json`;
+longer-term target: $100/day). A scan that finds nothing is a valid
 result.
 
 **Live execution is disabled and must stay disabled until the operator explicitly authorizes it.**
@@ -34,6 +35,7 @@ npm test               # local-only tests on an in-process chain; no network, no
 npm run typecheck      # build + tsc --noEmit
 npm run scan -- --minutes 10 --chains arbitrum,base   # read-only: eth_call only, no transactions
 npm run verify         # read-only: simulate one live route through every venue; proceeds must equal quotes
+npm run replay -- --session ID   # read-only: re-quote each opportunity block by block to measure its lifetime
 npm run dashboard      # operator view at http://127.0.0.1:8787 (read-only)
 npm run report -- --date YYYY-MM-DD                   # writes data/reports/
 ```

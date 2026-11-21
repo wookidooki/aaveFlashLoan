@@ -14,13 +14,13 @@ interface IFlashLoanSimpleReceiver {
 }
 
 /// @notice Test double for Aave v3 Pool.flashLoanSimple: sends `amount`, calls back with
-/// initiator = msg.sender, then pulls amount + premium. premium = percentMul(amount, premiumBps),
-/// i.e. (amount * bps + 5000) / 10000 as in Aave's PercentageMath.
+/// initiator = msg.sender, then pulls amount + premium. premium = ceil(amount * premiumBps / 10000),
+/// matching the rounding observed on mainnet Aave v3.
 contract MockAaveV3Pool {
     uint128 public FLASHLOAN_PREMIUM_TOTAL = 5;
 
     function flashLoanSimple(address receiver, address asset, uint256 amount, bytes calldata params, uint16) external {
-        uint256 premium = (amount * FLASHLOAN_PREMIUM_TOTAL + 5000) / 10000;
+        uint256 premium = (amount * FLASHLOAN_PREMIUM_TOTAL + 9999) / 10000;
         require(IERC20M(asset).transfer(receiver, amount), "send failed");
         require(
             IFlashLoanSimpleReceiver(receiver).executeOperation(asset, amount, premium, msg.sender, params),

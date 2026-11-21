@@ -7,7 +7,10 @@ export function v2AmountOut(amountIn: bigint, reserveIn: bigint, reserveOut: big
   return (inWithFee * reserveOut) / (reserveIn * 10000n + inWithFee);
 }
 
-/** Aave v3 flash-loan premium: amount.percentMul(premiumBps) = (amount * bps + 5000) / 10000 (half-up). */
+/**
+ * Aave v3 flash-loan premium, rounded up: ceil(amount * bps / 10000). Observed on Base mainnet at block
+ * 60266542: 1000064624 at 5 bps was charged 500033 (half-up rounding would give 500032).
+ */
 export function aaveV3Premium(amount: bigint, premiumBps: bigint): bigint {
-  return (amount * premiumBps + 5000n) / 10000n;
+  return (amount * premiumBps + 9999n) / 10000n;
 }

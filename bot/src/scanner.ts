@@ -963,6 +963,45 @@ export class Scanner extends EventEmitter {
     return out;
   }
 
+  /**
+   * Gap lifetime replay: re-quote one route at every block around `center` (historical eth_call;
+   * needs the RPC to still hold that state) and walk outwards until the gap is closed on both
+   * sides, so the true lifetime is measured independently of when the scanner noticed it.
+   */
+  async replayRoute(
+    chainName: string,
+    routeId: string,
+    center: bigint,
+    maxRadius = 40,
+  ): Promise<{ block: bigint; netUsd?: number; feeFreeNetUsd?: number; sizeUsd?: number; error?: string }[]> {
+    const rt = this.chains.get(chainName);
+    if (!rt) throw new Error(`unknown chain ${chainName}`);
+    if (!rt.market) await this.init(rt);
+    if (!rt.routes.length) await this.refreshPools(rt, (await rt.client.getBlockNumber()) - 1n);
+    const route = rt.routes.find((r) => r.id === routeId);
+    if (!route) throw new Error(`route ${routeId} not found in current pool set`);
+    const at = async (block: bigint) => {
+      try {
+        const { evals } = await this.evaluate(rt, [route], block, false, true);
+        const e = evals[0];
+        return { block, netUsd: e.best?.netUsd, feeFreeNetUsd: e.bestFeeFreeNetUsd, sizeUsd: e.best?.sizeUsd, error: e.best ? undefined : e.skip };
+      } catch (err) {
+        return { block, error: shortError(err) };
+      }
+    };
+    const rows = [await at(center)];
+    const positive = (r: { feeFreeNetUsd?: number }) => (r.feeFreeNetUsd ?? -Infinity) > this.cfg.minNetUsd;
+    for (const dir of [-1n, 1n]) {
+      let closedRun = 0;
+      for (let k = 1n; k <= BigInt(maxRadius) && closedRun < 2; k++) {
+        const r = await at(center + dir * k);
+        rows.push(r);
+        closedRun = positive(r) ? 0 : closedRun + 1;
+      }
+    }
+    return rows.sort((a, b) => (a.block < b.block ? -1 : 1));
+  }
+
   // ---------------------------------------------------------------- reporting
 
   summary() {

@@ -3,6 +3,7 @@
 //   dashboard [--port 8787] [--chains a,b] [--config path]   operator view with start/stop
 //   report    [--date YYYY-MM-DD] [--session ID]             daily / session report from data/
 //   verify    [--chains a,b]                                  simulate one route through every venue
+//   replay    --session ID                                    re-quote each opportunity block by block to measure its lifetime
 // Node's fetch only honours HTTPS_PROXY with NODE_USE_ENV_PROXY=1 (set in the npm scripts).
 import { parseArgs } from "node:util";
 import { loadConfig } from "./config.ts";
@@ -65,6 +66,37 @@ if (command === "scan") {
   }
   console.log(rows.filter((r) => r.rec?.proceedsMatchQuote).length + "/" + rows.length + " venues verified; " + bad + " mismatches");
   process.exit(bad ? 1 : 0);
+} else if (command === "replay") {
+  // Measure how many blocks each opportunity of a session was really open (historical eth_call).
+  const { readFileSync, writeFileSync, mkdirSync } = await import("node:fs");
+  const { DATA_DIR } = await import("./ledger.ts");
+  if (!values.session) throw new Error("replay needs --session ID");
+  const sum = JSON.parse(readFileSync(DATA_DIR + "sessions/" + values.session + ".json", "utf8"));
+  const eps = [...sum.closedEpisodes, ...sum.openEpisodes];
+  const scanner = new Scanner(loadConfig(values.config, [...new Set(eps.map((e: any) => e.chain as string))]));
+  const seen = new Set<string>();
+  const out: string[] = ["# Gap lifetime replay — session " + values.session, "",
+    "Each opportunity re-quoted at every block around where it was seen (best size per block).", "",
+    "| Kind | Route | Seen at | Blocks with net > min (Aave) | Blocks with net > min (fee-free) | Peak net (Aave / fee-free) |", "|---|---|---|---|---|---|"];
+  for (const ep of eps) {
+    const key = ep.routeId + "@" + ep.firstBlock;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const rows = await scanner.replayRoute(ep.chain, ep.routeId, BigInt(ep.firstBlock));
+    const aave = rows.filter((r) => (r.netUsd ?? -Infinity) > scanner.cfg.minNetUsd).map((r) => r.block);
+    const ff = rows.filter((r) => (r.feeFreeNetUsd ?? -Infinity) > scanner.cfg.minNetUsd).map((r) => r.block);
+    const peakA = Math.max(...rows.map((r) => r.netUsd ?? -Infinity));
+    const peakF = Math.max(...rows.map((r) => r.feeFreeNetUsd ?? -Infinity));
+    const errs = rows.filter((r) => r.error && r.netUsd === undefined).length;
+    const span = (b: bigint[]) => (b.length ? b.length + " (" + b[0] + "–" + b[b.length - 1] + ")" : "0");
+    const line = "| " + ep.kind + " | " + ep.routeId + " | " + ep.firstBlock + " | " + span(aave) + " | " + span(ff) + " | $" + peakA.toFixed(3) + " / $" + peakF.toFixed(3) + (errs ? " (" + errs + " blocks unreadable)" : "") + " |";
+    out.push(line);
+    console.log(line);
+  }
+  mkdirSync(DATA_DIR + "reports", { recursive: true });
+  writeFileSync(DATA_DIR + "reports/replay-" + values.session + ".md", out.join("\n") + "\n");
+  console.log("written data/reports/replay-" + values.session + ".md");
+  process.exit(0);
 } else if (command === "report") {
   const { writeReports } = await import("./report.ts");
   const files = writeReports({ date: values.date, session: values.session });
