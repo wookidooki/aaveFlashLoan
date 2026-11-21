@@ -2,8 +2,9 @@
 
 ## Goal
 
-A flash-loan-funded arbitrage bot. Aave supplies the trading principal; the operator's own funds
-cover gas only. Each candidate is one atomic round trip on one chain that borrows an asset and ends
+A flash-loan-funded arbitrage bot. Morpho Blue flash loans (no fee) supply the trading principal;
+the operator's own funds cover gas only. Aave v3 is used only as the price oracle (an Aave lender
+mode is kept for comparison: `lender` in `config/scan.json`). Each candidate is one atomic round trip on one chain that borrows an asset and ends
 in that same asset. The aim is to measure whether repeatable net profit exists after all costs
 (any trade with positive net after all costs qualifies — `minNetUsd` in `config/scan.json`;
 longer-term target: $100/day). A scan that finds nothing is a valid
@@ -57,8 +58,9 @@ proxy (the npm scripts set it).
 
 - `contracts/fixture/` — Aave-v1-style local proof: `MockAaveV1LendingPool` (mirrors the vendored
   v1 flashLoan rules), `FixtureArbReceiver`, `MockDAI`. Tests run the historical Vyper bytecode.
-- `contracts/live/FlashArbReceiverV3.sol` — Aave v3 receiver used by the scanner's simulation. Leg
-  kinds: Uniswap-v3-style and Pancake callbacks, Algebra, v2 pairs, `getAmountOut` pools, and
+- `contracts/live/ArbReceiverBase.sol` — shared receiver core (route checks, legs, callbacks);
+  `FlashArbReceiverMorpho.sol` (default lender, zero fee) and `FlashArbReceiverV3.sol` (Aave v3)
+  add only the borrow/repay step. Leg kinds: Uniswap-v3-style and Pancake callbacks, Algebra, v2 pairs, `getAmountOut` pools, and
   Uniswap v4 (hookless only; native ETH via WETH unwrap/wrap).
 - `contracts/live/CLQuoter.sol`, `contracts/live/CappedMulticall.sol` — never deployed; injected by
   eth_call state override to quote concentrated pools without a verified quoter, and to give every

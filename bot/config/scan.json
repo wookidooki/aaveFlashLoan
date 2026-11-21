@@ -40,6 +40,12 @@
         "https://arb1.arbitrum.io/rpc"
       ],
       "aavePoolAddressesProvider": "0xa97684ead0e402dC232d5A977953DF7ECBaB3CDb",
+      "lender": {
+        "type": "morpho",
+        "address": "0x6c247b1F6182318877311737BaC0844bAa518F5e",
+        "overheadGas": 60000,
+        "$comment": "Morpho Blue flash loans: no fee. The Aave market above is used only for oracle prices."
+      },
       "l1FeeModel": "arbitrum-nodeinterface",
       "gasToken": "WETH",
       "assets": {
@@ -193,6 +199,12 @@
         "https://mainnet.base.org"
       ],
       "aavePoolAddressesProvider": "0xe20fCBdBfFC4Dd138cE8b2E6FBb6CB49777ad64D",
+      "lender": {
+        "type": "morpho",
+        "address": "0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb",
+        "overheadGas": 60000,
+        "$comment": "Morpho Blue flash loans: no fee. The Aave market above is used only for oracle prices."
+      },
       "l1FeeModel": "opstack-gaspriceoracle",
       "gasToken": "WETH",
       "assets": {
@@ -361,6 +373,12 @@
         "https://mainnet.optimism.io"
       ],
       "aavePoolAddressesProvider": "0xa97684ead0e402dC232d5A977953DF7ECBaB3CDb",
+      "lender": {
+        "type": "morpho",
+        "address": "0xce95AfbB8EA029495c66020883F87aaE8864AF92",
+        "overheadGas": 60000,
+        "$comment": "Morpho Blue flash loans: no fee. The Aave market above is used only for oracle prices."
+      },
       "l1FeeModel": "opstack-gaspriceoracle",
       "gasToken": "WETH",
       "assets": {

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.34;
 
-import {PoolKey, SwapParams} from "../live/FlashArbReceiverV3.sol";
+import {PoolKey, SwapParams} from "../live/ArbReceiverBase.sol";
 
 interface IERC20PM {
     function balanceOf(address) external view returns (uint256);

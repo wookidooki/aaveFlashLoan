@@ -8,7 +8,7 @@
 // Live execution does not exist in this module: there is no wallet client and no private key.
 import { EventEmitter } from "node:events";
 import { pad, type Address, type PublicClient } from "viem";
-import { loadMarket, readMarketState, borrowBlocker, ERC20_ABI, type AaveMarket, type MarketState } from "./aave.ts";
+import { loadMarket, readMarketState, borrowBlocker, ERC20_ABI, type AaveMarket, type AssetState, type MarketState } from "./aave.ts";
 import { makeClient, multicallAt, rawCall, rpcRejections, shortError } from "./chain.ts";
 import type { ChainConfig, ScanConfig } from "./config.ts";
 import { calldataGas, estimateTxCost, readGasPrices, type GasCost, type GasPrices } from "./gas.ts";
@@ -305,7 +305,8 @@ export class Scanner extends EventEmitter {
     for (const u of c.unsupportedVenues) rt.venueSkips.push(u);
     this.log(
       "info",
-      `Aave v3 pool ${rt.market.pool}, ${rt.market.reserves.size} reserves; venues: ${c.venues.map((v) => v.id).join(", ")}`,
+      `lender: ${c.lender.type === "morpho" ? `Morpho ${c.lender.address} (no fee; Aave oracle ${rt.market.oracle} for prices only)` : `Aave v3 pool ${rt.market.pool}`}; ` +
+        `venues: ${c.venues.map((v) => v.id).join(", ")}`,
       c.name,
     );
   }
@@ -422,7 +423,10 @@ export class Scanner extends EventEmitter {
     const cached = useCached && rt.cache ? rt.cache : undefined;
     const [market, prices] = cached
       ? [cached.market, cached.prices]
-      : await Promise.all([readMarketState(rt.client, rt.market!, assetList, block), readGasPrices(rt.client, c, block)]);
+      : await Promise.all([
+          readMarketState(rt.client, rt.market!, assetList, block).then((m) => this.applyLender(rt, m, block)),
+          readGasPrices(rt.client, c, block),
+        ]);
     if (!useCached) rt.cache = { market, prices, screeningL1: rt.cache?.screeningL1 };
     const gasToken = c.assets[c.gasToken];
     const ethUsd = Number(market.assets.get(gasToken)!.priceUsd8) / 1e8;
@@ -525,7 +529,7 @@ export class Scanner extends EventEmitter {
         size.grossTokens = size.leg2Out - size.amount;
         size.netTokens = size.grossTokens - size.premium;
         const execGas =
-          BigInt(gm.txBaseGas + gm.flashLoanOverheadGas + 2 * gm.perLegOverheadGas) + size.leg1Gas! + size.leg2Gas!;
+          BigInt(gm.txBaseGas + (c.lender.overheadGas ?? gm.flashLoanOverheadGas) + 2 * gm.perLegOverheadGas) + size.leg1Gas! + size.leg2Gas!;
         const data = encodeRun("run", ev.route.borrow, size.amount, this.legsFor(ev.route, size.leg1Out!, size.leg2Out!), 1n);
         const l2Units = execGas + calldataGas(data);
         const gasPrice = prices.baseFee + prices.priorityFee;
@@ -630,7 +634,7 @@ export class Scanner extends EventEmitter {
       for (const ev of evals) {
         if (ev.marginalProduct !== undefined && !ev.sizeSearch) {
           ev.pruned = true;
-          ev.outcome = "pruned: no amount from $min to $max can cover the Aave premium (marginal rate)";
+          ev.outcome = "pruned: no amount from $min to $max can cover the lender premium (marginal rate)";
         }
       }
       return;
@@ -645,7 +649,7 @@ export class Scanner extends EventEmitter {
       if (ev.marginalProduct === undefined || top.has(ev) || ev.sizeSearch) continue;
       if (ev.marginalProduct * slack < needed) {
         ev.pruned = true;
-        ev.outcome = "pruned: marginal prices cannot cover the Aave premium at any size";
+        ev.outcome = "pruned: marginal prices cannot cover the lender premium at any size";
       }
     }
   }
@@ -658,11 +662,41 @@ export class Scanner extends EventEmitter {
     return [...new Set(out)];
   }
 
+  /**
+   * Lender view of the market. Aave: unchanged (premium and liquidity from the Aave market).
+   * Morpho: no premium; available liquidity is Morpho's token balance at this block; any asset with
+   * an oracle price can be borrowed (Aave's market is then used only for prices).
+   */
+  private async applyLender(rt: ChainRuntime, market: MarketState, block: bigint): Promise<MarketState> {
+    const l = rt.cfg.lender;
+    if (l.type !== "morpho") return market;
+    const assets = [...market.assets.keys()];
+    const res = await multicallAt(
+      rt.client,
+      assets.map((a) => ({ address: a, abi: ERC20_ABI, functionName: "balanceOf", args: [l.address!] })),
+      block,
+    );
+    const out = new Map<Address, AssetState>();
+    assets.forEach((a, i) => {
+      const s = market.assets.get(a)!;
+      out.set(a, {
+        ...s,
+        isReserve: s.priceUsd8 > 0n, // borrowable when priced
+        flashEnabled: true,
+        active: true,
+        paused: false,
+        frozen: false,
+        availableLiquidity: res[i].ok ? BigInt(res[i].value) : 0n,
+      });
+    });
+    return { premiumBps: 0n, assets: out };
+  }
+
   /** Recompute the best size's cost with the exact L1 fee for that route's calldata. */
   private async exactCost(rt: ChainRuntime, ev: RouteEval, prices: GasPrices, block: bigint, ethUsd: number, market: MarketState) {
     const s = ev.best!;
     const gm = this.cfg.gasModel;
-    const execGas = BigInt(gm.txBaseGas + gm.flashLoanOverheadGas + 2 * gm.perLegOverheadGas) + s.leg1Gas! + s.leg2Gas!;
+    const execGas = BigInt(gm.txBaseGas + (rt.cfg.lender.overheadGas ?? gm.flashLoanOverheadGas) + 2 * gm.perLegOverheadGas) + s.leg1Gas! + s.leg2Gas!;
     const data = encodeRun("run", ev.route.borrow, s.amount, this.legsFor(ev.route, s.leg1Out!, s.leg2Out!), 1n);
     s.gas = await estimateTxCost(rt.client, rt.cfg, prices, SIM_RECEIVER, data, execGas, block);
     s.gasUsd = (Number(s.gas.totalWei) / 1e18) * ethUsd;
@@ -676,7 +710,7 @@ export class Scanner extends EventEmitter {
     const lossBps = (Number(-s.grossTokens!) / Number(s.amount)) * 10000;
     if (lossBps > this.cfg.maxRoundTripLossBps) return `illiquid at this size: round trip loses more than ${this.cfg.maxRoundTripLossBps} bps`;
     if (s.grossTokens! <= 0n) return "no spread: swap fees + price impact exceed the price gap";
-    if (s.netTokens! <= 0n) return "spread smaller than the Aave premium";
+    if (s.netTokens! <= 0n) return "spread smaller than the lender premium";
     if (s.netUsd! <= 0) return "covers the premium but not gas";
     if (s.netUsd! <= this.cfg.minNetUsd) return "net positive but not above the minimum";
     return "qualifies";
@@ -762,7 +796,7 @@ export class Scanner extends EventEmitter {
       "info",
       `block ${block}: ${evals.length} routes, ${quotedRoutes} fully quoted, ${prunedRoutes} pruned by marginal-price bound, ` +
         `${evals.filter((e) => e.sizeSearch && !e.skip).length} searched $${this.cfg.sizeSearch.minUsd}-$${this.cfg.sizeSearch.maxUsd}, ` +
-        `closest edge at best amount ${fmt(rt.lastCycleBestEdgeBps ?? NaN, 1)} bps vs Aave break-even, in ${Date.now() - t0} ms; ` +
+        `closest edge at best amount ${fmt(rt.lastCycleBestEdgeBps ?? NaN, 1)} bps vs break-even (lender fee included, gas not), in ${Date.now() - t0} ms; ` +
         (b
           ? (b.best!.netUsd! > 0
               ? `best ${b.route.id} $${b.best!.sizeUsd} net $${fmt(b.best!.netUsd!, 4)}`
@@ -937,7 +971,7 @@ export class Scanner extends EventEmitter {
    */
   private async simulate(rt: ChainRuntime, ev: RouteEval, purpose: SimRecord["purpose"]): Promise<SimRecord> {
     const s = ev.best!;
-    const art = receiverArtifact();
+    const art = receiverArtifact(rt.cfg.lender.type);
     const data = encodeRun("simulate", ev.route.borrow, s.amount, this.legsFor(ev.route, 1n, 1n), 1n);
     const r = await rawCall(rt.client, {
       from: SIM_OWNER,
@@ -950,7 +984,7 @@ export class Scanner extends EventEmitter {
           code: art.deployedBytecode,
           stateDiff: {
             [pad("0x0", { size: 32 })]: pad(SIM_OWNER, { size: 32 }),
-            [pad("0x1", { size: 32 })]: pad(rt.market!.pool, { size: 32 }),
+            [pad("0x1", { size: 32 })]: pad(rt.cfg.lender.type === "morpho" ? rt.cfg.lender.address! : rt.market!.pool, { size: 32 }),
           },
         },
       },

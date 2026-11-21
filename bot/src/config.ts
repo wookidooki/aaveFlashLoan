@@ -30,6 +30,8 @@ export interface ChainConfig {
   chainId: number;
   rpcUrls: string[];
   aavePoolAddressesProvider: Address;
+  /** Flash-loan source. "morpho": zero fee, liquidity = Morpho's token balance. "aave": Aave v3 pool and premium. */
+  lender: { type: "aave" | "morpho"; address?: Address; overheadGas?: number };
   l1FeeModel: "arbitrum-nodeinterface" | "opstack-gaspriceoracle" | "none";
   gasToken: string;
   assets: Record<string, Address>;
@@ -91,6 +93,9 @@ export function loadConfig(path = DEFAULT_CONFIG_PATH, onlyChains?: string[]): S
       chainId: c.chainId,
       rpcUrls: c.rpcUrls,
       aavePoolAddressesProvider: getAddress(c.aavePoolAddressesProvider),
+      lender: c.lender
+        ? { type: c.lender.type, address: c.lender.address ? getAddress(c.lender.address) : undefined, overheadGas: c.lender.overheadGas }
+        : { type: "aave" },
       l1FeeModel: c.l1FeeModel ?? "none",
       gasToken: c.gasToken,
       assets,

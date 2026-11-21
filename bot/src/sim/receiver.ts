@@ -16,17 +16,25 @@ export interface LegArg {
   data: Hex;
 }
 
-const ARTIFACT = fileURLToPath(new URL("../../artifacts/contracts/live/FlashArbReceiverV3.sol/FlashArbReceiverV3.json", import.meta.url));
+const RECEIVERS = {
+  aave: "FlashArbReceiverV3",
+  morpho: "FlashArbReceiverMorpho",
+} as const;
 
-let cached: { abi: Abi; deployedBytecode: Hex } | undefined;
-/** Compiled receiver (run `npm run compile` first). */
-export function receiverArtifact(): { abi: Abi; deployedBytecode: Hex } {
-  if (!cached) {
-    if (!existsSync(ARTIFACT)) throw new Error("FlashArbReceiverV3 artifact missing: run `npm run compile` in bot/ first");
-    const j = JSON.parse(readFileSync(ARTIFACT, "utf8"));
-    cached = { abi: j.abi, deployedBytecode: j.deployedBytecode };
+const cached = new Map<string, { abi: Abi; deployedBytecode: Hex }>();
+/**
+ * Compiled receiver for a lender (run `npm run compile` first). Both share ArbReceiverBase, so
+ * run/simulate encoding and error decoding are identical; only the deployed code differs.
+ */
+export function receiverArtifact(lender: keyof typeof RECEIVERS = "aave"): { abi: Abi; deployedBytecode: Hex } {
+  const name = RECEIVERS[lender];
+  if (!cached.has(name)) {
+    const path = fileURLToPath(new URL(`../../artifacts/contracts/live/${name}.sol/${name}.json`, import.meta.url));
+    if (!existsSync(path)) throw new Error(`${name} artifact missing: run \`npm run compile\` in bot/ first`);
+    const j = JSON.parse(readFileSync(path, "utf8"));
+    cached.set(name, { abi: j.abi, deployedBytecode: j.deployedBytecode });
   }
-  return cached;
+  return cached.get(name)!;
 }
 
 export function encodeRun(fn: "run" | "simulate", asset: Address, amount: bigint, legs: LegArg[], minSurplus: bigint): Hex {
