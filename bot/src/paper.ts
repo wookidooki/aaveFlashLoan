@@ -9,7 +9,8 @@ import { multicallAt } from "./chain.ts";
 import { SWAP_TOPICS, V4_SWAP, swapInput } from "./competitors.ts";
 import { DATA_DIR } from "./ledger.ts";
 import type { ChainRuntime, Route, RouteEval, Scanner, SimRecord } from "./scanner.ts";
-import { marginalRates, rateFor, stateCalls } from "./marginal.ts";
+import { rateFor } from "./marginal.ts";
+import { TickCache, makeLocalQuoter, marginalFromSnapshot, parseSnapshot, stateReads, type PoolSnapshot } from "./localpool.ts";
 
 /** Float and rounding tolerance on the local marginal bound (it has no probe impact to cover). */
 const LOCAL_SLACK = 0.0002;
@@ -47,6 +48,8 @@ export interface PaperDecision {
   instantSimProfitUsd?: number;
   instantReason?: string;
   instantContested?: boolean;
+  /** the simulated proceeds at the decision's state block equal the local quote exactly */
+  localExact?: boolean;
 }
 
 export interface PaperSummary {
@@ -61,6 +64,10 @@ export interface PaperSummary {
   routesPassedLocalCheck: number;
   localBoundChecks: number;
   localBoundViolations: number;
+  localQuoteExact: number;
+  localQuoteMismatch: number;
+  localQuoteUnavailable: number;
+  localQuoteUnavailableWhy: Record<string, number>;
   decisions: number;
   verdicts: Record<string, number>;
   paperPnlUsd: number;
@@ -71,7 +78,9 @@ export class PaperTrader {
   private stopped = false;
   private decisions: PaperDecision[] = [];
   private pending: Promise<void>[] = [];
-  private stats = { blocksSeen: 0, processed: 0, cycleMs: 0, changed: 0, affected: 0, candidates: 0, localChecks: 0, localViolations: 0, readMs: 0, quoteMs: 0, quoted: 0 };
+  private stats = { blocksSeen: 0, processed: 0, cycleMs: 0, changed: 0, affected: 0, candidates: 0, localChecks: 0, localViolations: 0, readMs: 0, quoteMs: 0, quoted: 0, localUnavailable: 0, localExact: 0, localMismatch: 0 };
+  /** why exact local quotes were unavailable, by reason */
+  readonly unavailableWhy = new Map<string, number>();
   readonly startedAt = new Date().toISOString();
   private readonly file: string;
 
@@ -106,8 +115,20 @@ export class PaperTrader {
       // $1: the smallest size ever traded, so the rate bounds every size used (rates only fall with size)
       return p > 0n ? (10n ** d * 10n ** 8n) / p : 10n ** d;
     };
-    const fp = rt.pools.map((p) => stateCalls(p, probe));
+    const fp = rt.pools.map((p) => ({ pool: p, calls: stateReads(p, probe) }));
     const flat = fp.flatMap((f) => f.calls);
+    // Warm the tick cache for every concentrated pool before the loop starts.
+    const ticks = new TickCache();
+    {
+      const b0 = await rt.client.getBlockNumber();
+      const r0 = await multicallAt(rt.client, flat, b0, 60);
+      let j = 0;
+      for (const f of fp) {
+        const snap = parseSnapshot(f.pool, r0.slice(j, j + f.calls.length));
+        j += f.calls.length;
+        if (snap.cl) await ticks.fetch(rt.client, f.pool, snap.cl.tick, b0).catch(() => undefined);
+      }
+    }
     let prev: string[] | undefined;
     let lastBlock = 0n;
     let lastCacheRefresh = Date.now();
@@ -143,11 +164,18 @@ export class PaperTrader {
         // 2. Local marginal rates from the same read; only routes through changed pools whose
         //    marginal round-trip rate can beat break-even are quoted (usually none).
         const rates = new Map<string, { r01: number; r10: number } | undefined>();
+        const snaps = new Map<string, PoolSnapshot>();
         k = 0;
         for (const f of fp) {
-          const slice = res.slice(k, k + f.calls.length);
+          const snap = parseSnapshot(f.pool, res.slice(k, k + f.calls.length));
           k += f.calls.length;
-          rates.set(f.pool.id, marginalRates(f.pool, slice, probe));
+          snaps.set(f.pool.id, snap);
+          rates.set(f.pool.id, marginalFromSnapshot(snap, probe));
+        }
+        // Keep tick data fresh for moved pools (background; decisions use what is cached).
+        for (const p of changed) {
+          const s = snaps.get(p.id);
+          if (s?.cl && ticks.stale(p, s.cl.tick, 120_000)) ticks.fetch(rt.client, p, s.cl.tick, block).catch(() => undefined);
         }
         const affected = [...new Set(changed.flatMap((p) => routesByPool.get(p.id) ?? []))];
         const mp = new Map<string, number>();
@@ -178,7 +206,16 @@ export class PaperTrader {
           if (!cur || (mp.get(r.id) ?? Infinity) > (mp.get(cur.id) ?? Infinity)) perGap.set(r.gapKey, r);
         }
         const tQuote = Date.now();
-        const { evals } = await this.scanner.evaluate(rt, [...perGap.values()], block, false, true, true, this.scanner.cfg.paper.sizesUsd);
+        // Exact local quotes only: a decision never waits on the network.
+        const local = makeLocalQuoter(snaps, ticks, BigInt(this.scanner.cfg.gasModel.v2SwapGas), true);
+        const { evals } = await this.scanner.evaluate(rt, [...perGap.values()], block, false, true, true, this.scanner.cfg.paper.sizesUsd, local);
+        for (const ev of evals)
+          for (const s of ev.sizes)
+            if (s.skip?.includes("local quote unavailable")) {
+              this.stats.localUnavailable++;
+              const why = s.skip.replace(/^.*local quote unavailable: /, "").replace(/0x[0-9a-fA-F]+|-?\d+/g, "#").slice(0, 80);
+              this.unavailableWhy.set(why, (this.unavailableWhy.get(why) ?? 0) + 1);
+            }
         this.stats.quoteMs += Date.now() - tQuote;
         this.stats.quoted++;
         // Soundness of the local model: a real quote must never beat the local marginal bound.
@@ -202,7 +239,7 @@ export class PaperTrader {
           const cur = byGap.get(ev.route.gapKey);
           if (!cur || ev.best.netUsd! > cur.best!.netUsd!) byGap.set(ev.route.gapKey, ev);
         }
-        const headNow = await rt.client.getBlockNumber();
+        const headNow = byGap.size ? await rt.client.getBlockNumber() : block;
         for (const ev of byGap.values()) {
           const d: PaperDecision = {
             id: this.decisions.length + 1,
@@ -259,15 +296,25 @@ export class PaperTrader {
       d.competitor = await this.findCompetitor(rt, ev.route, BigInt(d.stateBlock) + 1n, target);
       // Speed upside: what an instant bot (landing in stateBlock + 1) would have got.
       const state = BigInt(d.stateBlock);
+      let atState: SimRecord = sim;
       if (target - 1n > state) {
-        const inst = await this.scanner.simulateAt(rt, ev, state, "paper-trade");
-        d.instantSimProfitUsd = inst.ok ? (Number(inst.simProfit) / 10 ** dec) * price : 0;
-        d.instantReason = inst.ok ? "executed" : inst.reason;
+        atState = await this.scanner.simulateAt(rt, ev, state, "paper-trade");
+        d.instantSimProfitUsd = atState.ok ? (Number(atState.simProfit) / 10 ** dec) * price : 0;
+        d.instantReason = atState.ok ? "executed" : atState.reason;
         d.instantContested = d.competitor !== undefined && BigInt(d.competitor.block) === state + 1n;
       } else {
         d.instantSimProfitUsd = d.simProfitUsd;
         d.instantReason = d.simReason;
         d.instantContested = d.competitor !== undefined && BigInt(d.competitor.block) === target;
+      }
+      // Exactness: the receiver run on the state the decision saw must return exactly the local quote.
+      if (atState.simProceeds !== undefined) {
+        d.localExact = atState.simProceeds === String(ev.best!.leg2Out);
+        if (d.localExact) this.stats.localExact++;
+        else {
+          this.stats.localMismatch++;
+          this.log(`local quote mismatch on #${d.id}: local ${ev.best!.leg2Out} vs simulated ${atState.simProceeds}`);
+        }
       }
       const compBlock = d.competitor ? BigInt(d.competitor.block) : undefined;
       d.verdict =
@@ -337,6 +384,10 @@ export class PaperTrader {
       routesPassedLocalCheck: this.stats.candidates,
       localBoundChecks: this.stats.localChecks,
       localBoundViolations: this.stats.localViolations,
+      localQuoteExact: this.stats.localExact,
+      localQuoteMismatch: this.stats.localMismatch,
+      localQuoteUnavailable: this.stats.localUnavailable,
+      localQuoteUnavailableWhy: Object.fromEntries([...this.unavailableWhy].sort((a, b) => b[1] - a[1]).slice(0, 8)),
       decisions: this.decisions.length,
       verdicts,
       paperPnlUsd: this.decisions.reduce((s, d) => s + (d.paperPnlUsd ?? 0), 0),
@@ -359,6 +410,8 @@ export function paperMarkdown(s: PaperSummary): string {
     `| Watched pools changing per processed block | ${s.changedPoolsPerBlock.toFixed(2)} |`,
     `| Routes touched by those changes / passing the local marginal-rate check (then quoted) | ${s.routesTouched} / ${s.routesPassedLocalCheck} |`,
     `| Local marginal model checked against real quotes: checks / violations | ${s.localBoundChecks} / ${s.localBoundViolations} |`,
+    `| Decisions priced locally: simulated proceeds exactly equal to the local quote / different | ${s.localQuoteExact} / ${s.localQuoteMismatch} |`,
+    `| Size quotes with no exact local answer (skipped, never sent to the RPC) | ${s.localQuoteUnavailable}${Object.keys(s.localQuoteUnavailableWhy).length ? ": " + Object.entries(s.localQuoteUnavailableWhy).map(([k, n]) => `${k} (${n})`).join("; ") : ""} |`,
     `| Decisions (would have sent) | ${s.decisions} |`,
     `| Verdicts | ${Object.entries(s.verdicts).map(([k, v]) => `${k} ${v}`).join(", ") || "none"} |`,
     `| Paper P&L (won trades' simulated profit minus gas; reverts cost gas) | $${s.paperPnlUsd.toFixed(4)} |`,

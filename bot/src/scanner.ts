@@ -14,7 +14,14 @@ import type { ChainConfig, ScanConfig } from "./config.ts";
 import { calldataGas, estimateTxCost, readGasPrices, type GasCost, type GasPrices } from "./gas.ts";
 import { aaveV3Premium } from "./quote/amm.ts";
 import { decodeSimulation, encodeRun, receiverArtifact, type LegArg } from "./sim/receiver.ts";
-import { discoverPools, quoteMany, readV2Reserves, verifyVenue, type PoolInfo, type PoolSkip, type QuoteRequest } from "./venues.ts";
+import { discoverPools, quoteMany, readV2Reserves, verifyVenue, type PoolInfo, type PoolSkip, type Quote, type QuoteRequest } from "./venues.ts";
+
+/** Exact off-chain quoter used by the paper trader (see localpool.ts). */
+export interface LocalQuoter {
+  quote: (req: QuoteRequest) => Quote | { error: string; fallback: boolean };
+  /** never fall back to RPC quotes: unavailable local quotes become errors */
+  only: boolean;
+}
 
 /** Simulation-only addresses: the receiver's code is injected here via eth_call state override. */
 export const SIM_RECEIVER: Address = "0x5115000000000000000000000000000000005115";
@@ -418,6 +425,8 @@ export class Scanner extends EventEmitter {
     useCached = false,
     /** explicit loan sizes (USD) instead of the configured sizes and ladder */
     sizesUsdOverride?: number[],
+    /** exact off-chain quoter; `only`: never fall back to RPC quotes (paper-trader decisions) */
+    local?: LocalQuoter,
   ): Promise<{ evals: RouteEval[]; market: MarketState; prices: GasPrices }> {
     const c = rt.cfg;
     const gm = this.cfg.gasModel;
@@ -439,7 +448,8 @@ export class Scanner extends EventEmitter {
     // Marginal rates are always measured: they decide which routes get the $min-$max size search.
     // Sweeps prune routes that cannot cover the premium at any size (top routes exempt); per-block
     // passes skip every route that cannot be profitable at any size even without the premium.
-    await this.applyMarginalBound(rt, evals, market, v2Reserves, block, useCached ? "hot" : full ? "none" : "sweep");
+    const quote = (reqs: QuoteRequest[]) => this.quoteWith(rt, reqs, v2Reserves, block, local);
+    await this.applyMarginalBound(rt, evals, market, quote, block, useCached ? "hot" : full ? "none" : "sweep");
 
     // Leg 1, deduplicated by (pool, tokenIn, amount).
     const leg1Reqs: QuoteRequest[] = [];
@@ -469,7 +479,7 @@ export class Scanner extends EventEmitter {
         }
       }
     }
-    const leg1 = await quoteMany(rt.client, leg1Reqs, v2Reserves, gm, block);
+    const leg1 = await quote(leg1Reqs);
 
     // Leg 2: input is exactly the leg-1 output.
     const leg2Reqs: QuoteRequest[] = [];
@@ -488,7 +498,7 @@ export class Scanner extends EventEmitter {
         leg2Owner.push(size);
       }
     }
-    const leg2 = await quoteMany(rt.client, leg2Reqs, v2Reserves, gm, block);
+    const leg2 = await quote(leg2Reqs);
     leg2.forEach((q2, i) => {
       const size = leg2Owner[i];
       if ("error" in q2) size.skip = `leg2: ${q2.error}`;
@@ -582,7 +592,7 @@ export class Scanner extends EventEmitter {
     rt: ChainRuntime,
     evals: RouteEval[],
     market: MarketState,
-    v2Reserves: Map<Address, [bigint, bigint]>,
+    quote: (reqs: QuoteRequest[]) => Promise<(Quote | { error: string })[]>,
     block: bigint,
     mode: "sweep" | "hot" | "none",
   ) {
@@ -601,7 +611,7 @@ export class Scanner extends EventEmitter {
         reqs.push({ pool, tokenIn, tokenOut, amountIn: this.loanAmount(rt, tokenIn, p, this.cfg.probeUsd) });
       }
     }
-    const quotes = await quoteMany(rt.client, reqs, v2Reserves, this.cfg.gasModel, block);
+    const quotes = await quote(reqs);
     const rate = (poolId: string, tokenIn: Address) => {
       const i = index.get(`${poolId}|${tokenIn}`);
       if (i === undefined) return undefined;
@@ -692,6 +702,34 @@ export class Scanner extends EventEmitter {
       });
     });
     return { premiumBps: 0n, assets: out };
+  }
+
+  /**
+   * Quote a batch: exact local quotes where available; the rest via the venues' on-chain quoters,
+   * unless the local quoter is local-only (then they are reported as unavailable).
+   */
+  private async quoteWith(
+    rt: ChainRuntime,
+    reqs: QuoteRequest[],
+    v2Reserves: Map<Address, [bigint, bigint]>,
+    block: bigint,
+    local?: LocalQuoter,
+  ): Promise<(Quote | { error: string })[]> {
+    if (!local) return quoteMany(rt.client, reqs, v2Reserves, this.cfg.gasModel, block);
+    const out: (Quote | { error: string })[] = new Array(reqs.length);
+    const remote: number[] = [];
+    reqs.forEach((r, i) => {
+      const q = local.quote(r);
+      if ("error" in q && q.fallback) {
+        if (local.only) out[i] = { error: `local quote unavailable: ${q.error}` };
+        else remote.push(i);
+      } else out[i] = "error" in q ? { error: q.error } : q;
+    });
+    if (remote.length) {
+      const rr = await quoteMany(rt.client, remote.map((i) => reqs[i]), v2Reserves, this.cfg.gasModel, block);
+      remote.forEach((i, k) => (out[i] = rr[k]));
+    }
+    return out;
   }
 
   /** Recompute the best size's cost with the exact L1 fee for that route's calldata. */

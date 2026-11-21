@@ -4,7 +4,7 @@
 import { parseAbi, zeroAddress, type Address, type Hex, type PublicClient } from "viem";
 import { multicallAt, type CallResult, type CallSpec } from "./chain.ts";
 import { MissingTickData, swapExactIn, type ClState, type TickData } from "./quote/v3math.ts";
-import { v2AmountOut } from "./quote/amm.ts";
+import { solidlyStableAmountOut, v2AmountOut } from "./quote/amm.ts";
 import type { PoolInfo } from "./venues.ts";
 
 const SLOT0 = parseAbi(["function slot0() view returns (uint160 sqrtPriceX96, int24 tick)"]); // leading fields only
@@ -23,6 +23,7 @@ const STATE_VIEW = parseAbi([
 ]);
 const ALGEBRA = parseAbi(["function globalState() view returns (uint160 price)"]);
 const SOLIDLY_FEE = parseAbi(["function getFee(address pool, bool stable) view returns (uint256)"]);
+const SOLIDLY_META = parseAbi(["function metadata() view returns (uint256 dec0, uint256 dec1, uint256 r0, uint256 r1, bool st, address t0, address t1)"]);
 
 const isV3Like = (p: PoolInfo) => p.venue.type === "v3" || p.venue.type === "slipstream";
 
@@ -44,6 +45,8 @@ export function stateReads(p: PoolInfo, probe: (token: Address) => bigint): Call
     ];
     // Aerodrome/Velodrome v2: per-pool fee in bps from the factory (used for the volatile x*y=k model).
     if (v.type === "solidly") calls.push({ address: v.factory, abi: SOLIDLY_FEE, functionName: "getFee", args: [p.address, p.param as boolean] });
+    // Stable pools: token decimals as the pool stores them (10**decimals), for the x^3y+xy^3 curve.
+    if (v.type === "solidly" && p.param === true) calls.push({ address: p.address, abi: SOLIDLY_META, functionName: "metadata" });
     return calls;
   }
   if (v.type === "slipstream") {
@@ -72,6 +75,8 @@ export interface PoolSnapshot {
   probeOut?: [bigint, bigint];
   /** Aerodrome/Velodrome v2 fee in bps (factory.getFee) */
   solidlyFeeBps?: bigint;
+  /** Aerodrome/Velodrome v2 stable pools: [10**decimals0, 10**decimals1] */
+  solidlyDecimals?: [bigint, bigint];
   ok: boolean;
 }
 
@@ -102,6 +107,7 @@ export function parseSnapshot(p: PoolInfo, res: CallResult[]): PoolSnapshot {
       reserves: [BigInt(r0), BigInt(r1)],
       probeOut: [BigInt(val(1)), BigInt(val(2))],
       solidlyFeeBps: v.type === "solidly" ? BigInt(val(3)) : undefined,
+      solidlyDecimals: v.type === "solidly" && p.param === true ? [BigInt(val(4)[0]), BigInt(val(4)[1])] : undefined,
     };
   }
   return { pool: p, ok: true };
@@ -118,6 +124,52 @@ function logicalCurrency0(p: PoolInfo): Address {
 function v4Fee(lpFee: bigint, protocolFee: number, zeroForOne: boolean): bigint {
   const pf = BigInt(zeroForOne ? protocolFee & 0xfff : protocolFee >> 12);
   return pf === 0n ? lpFee : pf + lpFee - (pf * lpFee) / 1_000_000n;
+}
+
+// ---------------------------------------------------------------- marginal rates
+
+/**
+ * Marginal (best possible) rates from a snapshot, in raw token units: r01 = token1 out per token0 in,
+ * r10 = token0 out per token1 in. getAmountOut pools use their $1 probe output (a bound for every
+ * size >= $1). Undefined when there is no local model (Algebra) or the read failed.
+ */
+export function marginalFromSnapshot(snap: PoolSnapshot | undefined, probe: (t: Address) => bigint): { r01: number; r10: number } | undefined {
+  if (!snap?.ok) return undefined;
+  const p = snap.pool;
+  if (snap.cl) {
+    const sqrt = Number(snap.cl.sqrtPriceX96) / 2 ** 96;
+    const price = sqrt * sqrt; // currency1 per currency0
+    if (!(price > 0)) return undefined;
+    const fee = (zf: boolean) =>
+      Number(p.venue.type === "v4" ? v4Fee(snap.cl!.feePips, (snap.cl as any).protocolFee ?? 0, zf) : snap.cl!.feePips) / 1e6;
+    const c01 = price * (1 - fee(true));
+    const c10 = (1 / price) * (1 - fee(false));
+    return logicalCurrency0(p) === p.token0 ? { r01: c01, r10: c10 } : { r01: c10, r10: c01 };
+  }
+  if (p.venue.type === "v2" && snap.reserves) {
+    const [r0, r1] = snap.reserves;
+    const f = 1 - p.venue.feeBps / 1e4;
+    return r0 > 0n && r1 > 0n ? { r01: (Number(r1) / Number(r0)) * f, r10: (Number(r0) / Number(r1)) * f } : undefined;
+  }
+  if (snap.probeOut) {
+    const [o0, o1] = snap.probeOut;
+    return o0 > 0n && o1 > 0n ? { r01: Number(o0) / Number(probe(p.token0)), r10: Number(o1) / Number(probe(p.token1)) } : undefined;
+  }
+  return undefined;
+}
+
+/** Errors that mean "no exact local answer here, ask the RPC" rather than "this size cannot work". */
+const FALLBACK = /no tick data|leaves cached tick range|no local model|stable-curve|no state/;
+
+/** A LocalQuoter (scanner.ts) over this block's snapshots and the tick cache. */
+export function makeLocalQuoter(snaps: Map<string, PoolSnapshot>, ticks: TickCache, v2Gas: bigint, only: boolean) {
+  return {
+    only,
+    quote: (req: { pool: PoolInfo; tokenIn: Address; amountIn: bigint }) => {
+      const q = localQuote(snaps.get(req.pool.id), ticks, req.tokenIn, req.amountIn, v2Gas);
+      return "error" in q ? { error: q.error, fallback: FALLBACK.test(q.error) } : q;
+    },
+  };
 }
 
 // ---------------------------------------------------------------- tick cache
@@ -235,7 +287,7 @@ export function localQuote(snap: PoolSnapshot | undefined, ticks: TickCache, tok
     return out > 0n ? { amountOut: out, gas: v2Gas } : { error: "zero output" };
   }
   // Aerodrome/Velodrome v2 volatile pools (Pool.getAmountOut): amountIn -= amountIn * fee / 10000,
-  // then x*y=k on reserves. Stable pools use a different curve and stay on the RPC quote.
+  // then x*y=k on reserves. Stable pools: x^3y+xy^3 (solidlyStableAmountOut).
   if (p.venue.type === "solidly" && p.param === false && snap.reserves && snap.solidlyFeeBps !== undefined) {
     const [r0, r1] = snap.reserves;
     const [rIn, rOut] = tokenIn === p.token0 ? [r0, r1] : [r1, r0];
@@ -243,5 +295,14 @@ export function localQuote(snap: PoolSnapshot | undefined, ticks: TickCache, tok
     const out = (net * rOut) / (rIn + net);
     return out > 0n ? { amountOut: out, gas: 90_000n } : { error: "zero output" };
   }
-  return { error: p.venue.type === "solidly" ? "stable-curve pool (RPC quote)" : "no local model for this venue" };
+  if (p.venue.type === "solidly" && p.param === true && snap.reserves && snap.solidlyFeeBps !== undefined && snap.solidlyDecimals) {
+    const [r0, r1] = snap.reserves;
+    try {
+      const out = solidlyStableAmountOut(amountIn, snap.solidlyFeeBps, tokenIn === p.token0, r0, r1, ...snap.solidlyDecimals);
+      return out > 0n ? { amountOut: out, gas: 110_000n } : { error: "zero output" };
+    } catch {
+      return { error: "pool cannot fill this size" };
+    }
+  }
+  return { error: p.venue.type === "solidly" ? "stable-curve pool without state (RPC quote)" : "no local model for this venue" };
 }
