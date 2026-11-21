@@ -56,6 +56,18 @@ function breakdown(e: any): string {
   ].join("\n");
 }
 
+function perBlock(sessions: Summary[]): string {
+  let passes = 0, ms = 0, skipped = 0;
+  for (const s of sessions)
+    for (const c of Object.values<any>(s.chains)) {
+      if (!c.perBlock) continue;
+      passes += c.perBlock.passes;
+      ms += (c.perBlock.avgMs ?? 0) * c.perBlock.passes;
+      skipped += c.perBlock.blocksSkipped;
+    }
+  return passes ? `${passes} / ${Math.round(ms / passes)} / ${skipped}` : "n/a (not run in this session's version)";
+}
+
 export function buildReport(sessions: Summary[], ledger: any[], title: string): { md: string; json: any } {
   const L: string[] = [`# ${title}`, ""];
   if (!sessions.length) {
@@ -65,8 +77,18 @@ export function buildReport(sessions: Summary[], ledger: any[], title: string): 
   const start = sessions[0].startedAt;
   const end = sessions.map((s) => s.stoppedAt ?? s.updatedAt).sort().at(-1);
   const trades = ledger.filter((e) => e.type === "trade");
-  const allEpisodes = sessions.flatMap((s) => [...s.closedEpisodes, ...s.openEpisodes]);
+  const everyEpisode = sessions.flatMap((s) => [...s.closedEpisodes, ...s.openEpisodes]);
+  const allEpisodes = everyEpisode.filter((e) => (e.kind ?? "aave") === "aave");
+  const feeFree = everyEpisode.filter((e) => e.kind === "fee-free");
   const fresh = allEpisodes.filter((e) => e.freshQuote?.qualifies);
+  const minNet = sessions[0].config.minNetUsd ?? sessions[0].config.benchmarkNetUsd;
+  const blocksOpen = (eps: any[]) => {
+    if (!eps.length) return "n/a";
+    const b = eps.map((e) => e.blocksOpen ?? 1).sort((x: number, y: number) => x - y);
+    const one = b.filter((x: number) => x === 1).length;
+    return `median ${b[Math.floor(b.length / 2)]}, max ${b.at(-1)}; ${one} of ${b.length} seen in a single block only`;
+  };
+  const sumNet = (eps: any[]) => eps.reduce((a: number, e: any) => a + (e.bestNetUsd ?? 0), 0);
   const sims = sessions.flatMap((s) => s.simulations);
   const chainNames = [...new Set(sessions.flatMap((s) => Object.keys(s.chains)))];
 
@@ -74,7 +96,7 @@ export function buildReport(sessions: Summary[], ledger: any[], title: string): 
     `- Observation period: ${start} -> ${end} (${dur(Date.parse(end) - Date.parse(start))}), ${sessions.length} session(s)`,
     `- Live execution: **disabled** (not authorized; no wallet or key loaded)`,
     `- Loan sizes: ${sessions[0].config.loanSizesUsd.map((x: number) => "$" + x.toLocaleString()).join(", ")} equivalent per borrowed asset (Aave oracle price at the quote block)`,
-    `- Benchmark: ${usd(sessions[0].config.benchmarkNetUsd)} net per trade; business target ${usd(sessions[0].config.dailyTargetUsd)}/day`,
+    `- A trade qualifies when its net after Aave premium, gas and L1 fee is above ${usd(minNet)}; business target ${usd(sessions[0].config.dailyTargetUsd)}/day`,
     "",
     "## Headline",
     "",
@@ -107,21 +129,25 @@ export function buildReport(sessions: Summary[], ledger: any[], title: string): 
     classified
       ? `| Size-level quotes: completed / pool cannot fill the size / dominated (provably unprofitable) / other failures | ${quotesOk} / ${quotesCannotFill} / ${quotesDominated} / ${quotesFailed} |`
       : `| Size-level quotes completed / failed (failure causes not classified in this session's version) | ${quotesOk} / ${quotesFailed} |`,
-    `| Independent opportunities (>= benchmark on first quote; repeat sightings of one gap count once) | ${allEpisodes.length} |`,
+    `| Independent opportunities (net above ${usd(minNet)} after all costs; one gap counts once) | ${allEpisodes.length} |`,
     `| ...still qualifying on a fresh quote at a newer block | ${fresh.length} |`,
+    `| ...blocks each stayed open while observed | ${blocksOpen(allEpisodes)} |`,
     `| Best quoted net (any route, any size) | ${best ? usd(best.best.netUsd) : "n/a"} |`,
+    `| Counterfactual, fee-free lender: independent positive-net gaps / sum of best net / blocks open | ${feeFree.length} / ${usd(sumNet(feeFree))} / ${blocksOpen(feeFree)} |`,
+    `| Per-block passes (hot routes re-quoted every new block): passes / avg ms / blocks skipped while busy | ${perBlock(sessions)} |`,
     `| Simulations run (receiver code via eth_call) | ${sims.length} (${sims.filter((x: any) => x.ok).length} executed, ${sims.filter((x: any) => x.proceedsMatchQuote).length} with proceeds exactly equal to quote) |`,
     "",
-    "## Benchmarks",
+    "## Targets",
     "",
-    `- ${usd(sessions[0].config.benchmarkNetUsd)} per trade: ${fresh.length ? `supported ${fresh.length} time(s) on a fresh quote` : "**not supported** in this period: no opportunity reached it on a fresh quote"}.`,
+    `- Positive net per trade (above ${usd(minNet)}): ${allEpisodes.length ? `${allEpisodes.length} independent gap(s) seen, ${fresh.length} still there on a fresh quote; best-net sum ${usd(sumNet(allEpisodes))}` : "**none** in this period with the Aave premium"}.`,
     `- ${usd(sessions[0].config.dailyTargetUsd)}/day: ${fresh.length ? `fresh-quote qualifying net totalled ${usd(fresh.reduce((a: number, e: any) => a + (e.freshQuote.netUsd ?? 0), 0))} over the period` : "**not supported**: zero qualifying trades"}.`,
+    `- Without the Aave premium (counterfactual): ${feeFree.length} gap(s), best-net sum ${usd(sumNet(feeFree))}.`,
     "",
     "## Quoted vs simulated vs realized",
     "",
     "| Layer | Result |",
     "|---|---|",
-    `| Quoted net profit | best ${best ? usd(best.best.netUsd) : "n/a"}; ${allEpisodes.length} route(s) ever at or above benchmark |`,
+    `| Quoted net profit | best ${best ? usd(best.best.netUsd) : "n/a"}; ${allEpisodes.length} independent gap(s) above ${usd(minNet)} |`,
     `| Simulation | ${sims.length ? sims.slice(-3).map((x: any) => `${x.routeId} $${x.sizeUsd}: ${x.ok ? "executed" : x.reason}${x.proceedsMatchQuote !== undefined ? (x.proceedsMatchQuote ? ", proceeds = quote" : ", proceeds != quote") : ""}`).join("; ") : "none"} |`,
     `| Realized wallet P&L | ${trades.length ? "see trades" : "$0.00 — no transactions sent (live execution disabled)"} |`,
     "",
@@ -183,10 +209,20 @@ export function buildReport(sessions: Summary[], ledger: any[], title: string): 
       );
     }
   }
-  if (allEpisodes.length) {
-    L.push("## Opportunities", "", "| Chain | Route | First seen | Sightings | Best quoted net | Fresh quote | Simulation |", "|---|---|---|---|---|---|---|");
-    for (const e of allEpisodes)
-      L.push(`| ${e.chain} | ${e.routeId} | ${e.firstSeen} | ${e.sightings} | ${usd(e.bestNetUsd)} | ${e.freshQuote ? `${usd(e.freshQuote.netUsd)} ${e.freshQuote.qualifies ? "qualifies" : `(${e.freshQuote.note})`}` : "n/a"} | ${e.simulation ? (e.simulation.ok ? "executed" : e.simulation.reason) : "n/a"} |`);
+  if (everyEpisode.length) {
+    L.push(
+      "## Opportunities",
+      "",
+      "| Kind | Chain | Route | First seen | First block | Blocks open | Best net | Fresh quote | Simulation |",
+      "|---|---|---|---|---|---|---|---|---|",
+    );
+    for (const e of everyEpisode.slice(0, 200))
+      L.push(
+        `| ${e.kind ?? "aave"} | ${e.chain} | ${e.routeId} | ${e.firstSeen} | ${e.firstBlock} | ${e.blocksOpen ?? e.sightings} | ${usd(e.bestNetUsd)} | ` +
+          `${e.freshQuote ? `${usd(e.freshQuote.netUsd)} ${e.freshQuote.qualifies ? "qualifies" : `(${e.freshQuote.note})`}` : "n/a"} | ` +
+          `${e.simulation ? (e.simulation.ok ? "executed" : e.simulation.reason) : "n/a"} |`,
+      );
+    if (everyEpisode.length > 200) L.push(`| ... ${everyEpisode.length - 200} more in the session JSON |||||||||`);
     L.push("");
   }
   return {

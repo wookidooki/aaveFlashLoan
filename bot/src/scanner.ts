@@ -51,6 +51,9 @@ export interface SizeEval {
   gasUsd?: number;
   l1Usd?: number;
   netUsd?: number;
+  /** premium in USD, and net if the flash loan were fee-free (counterfactual, for comparison only) */
+  premiumUsd?: number;
+  feeFreeNetUsd?: number;
   skip?: string;
   /** not quoted (or quote failed), but provably unprofitable because a smaller size already loses */
   dominated?: boolean;
@@ -63,6 +66,10 @@ export interface RouteEval {
   best?: SizeEval;
   outcome: string;
   qualifies: boolean;
+  /** counterfactual: would some size clear minNetUsd if the flash loan were fee-free? */
+  feeFreeQualifies?: boolean;
+  /** best net over sizes in that counterfactual (USD) */
+  bestFeeFreeNetUsd?: number;
   /** rate(first) x rate(second) at the probe size: an upper bound on the round-trip rate */
   marginalProduct?: number;
   /** not quoted at full sizes because the marginal-price bound cannot cover the premium */
@@ -71,11 +78,16 @@ export interface RouteEval {
 }
 
 export interface Episode {
+  /** "aave": positive net with the real Aave premium. "fee-free": counterfactual without the premium. */
+  kind: "aave" | "fee-free";
   gapKey: string;
   chain: string;
   firstSeen: string;
   lastSeen: string;
   firstBlock: string;
+  lastBlock: string;
+  /** lastBlock - firstBlock + 1: how many blocks the gap stayed open while observed */
+  blocksOpen: number;
   sightings: number;
   bestNetUsd: number;
   routeId: string;
@@ -134,6 +146,13 @@ interface ChainRuntime {
   boundViolations: number;
   quotesDominated: number;
   quotesCannotFill: number;
+  hotRoutes: Route[];
+  lastHotBlock: bigint;
+  /** Aave state, gas prices and screening L1 fee from the last full sweep, reused by per-block passes */
+  cache?: { market: MarketState; prices: GasPrices; screeningL1?: GasCost };
+  hot: { passes: number; ms: number; blocksSkipped: number; routeEvals: number; outcomes: Map<string, number> };
+  bestFeeFreeUsd?: number;
+  bestFeeFreeRoute?: string;
   quotesOk: number;
   quotesFailed: number;
   skipCounts: Map<string, number>;
@@ -183,6 +202,9 @@ export class Scanner extends EventEmitter {
         boundViolations: 0,
         quotesDominated: 0,
         quotesCannotFill: 0,
+        hotRoutes: [],
+        lastHotBlock: 0n,
+        hot: { passes: 0, ms: 0, blocksSkipped: 0, routeEvals: 0, outcomes: new Map() },
         quotesOk: 0,
         quotesFailed: 0,
         skipCounts: new Map(),
@@ -228,8 +250,15 @@ export class Scanner extends EventEmitter {
       this.log("error", `cycle failed: ${rt.lastError}`, rt.cfg.name);
     }
     rt.lastCycleMs = Date.now() - t0;
+    // Between full sweeps, re-quote the hot routes on every new block.
+    try {
+      await this.hotLoop(rt, t0 + this.cfg.intervalSeconds * 1000);
+    } catch (e) {
+      rt.lastError = shortError(e);
+      this.log("error", `per-block pass failed: ${rt.lastError}`, rt.cfg.name);
+    }
     if (!this.running) return;
-    const wait = Math.max(1000, this.cfg.intervalSeconds * 1000 - rt.lastCycleMs);
+    const wait = Math.max(250, this.cfg.intervalSeconds * 1000 - (Date.now() - t0));
     rt.timer = setTimeout(() => this.loop(rt), wait);
   }
 
@@ -365,18 +394,29 @@ export class Scanner extends EventEmitter {
   }
 
   /** Quote and cost a set of routes at one block. */
-  async evaluate(rt: ChainRuntime, routes: Route[], block: bigint, exactL1 = false): Promise<{ evals: RouteEval[]; market: MarketState; prices: GasPrices }> {
+  async evaluate(
+    rt: ChainRuntime,
+    routes: Route[],
+    block: bigint,
+    exactL1 = false,
+    forceFull = false,
+    /** per-block passes: reuse Aave state, gas prices and the screening L1 fee from the last sweep */
+    useCached = false,
+  ): Promise<{ evals: RouteEval[]; market: MarketState; prices: GasPrices }> {
     const c = rt.cfg;
     const gm = this.cfg.gasModel;
     const assetList = [...new Set(Object.values(c.assets))];
-    const market = await readMarketState(rt.client, rt.market!, assetList, block);
-    const prices = await readGasPrices(rt.client, c, block);
+    const cached = useCached && rt.cache ? rt.cache : undefined;
+    const [market, prices] = cached
+      ? [cached.market, cached.prices]
+      : await Promise.all([readMarketState(rt.client, rt.market!, assetList, block), readGasPrices(rt.client, c, block)]);
+    if (!useCached) rt.cache = { market, prices, screeningL1: rt.cache?.screeningL1 };
     const gasToken = c.assets[c.gasToken];
     const ethUsd = Number(market.assets.get(gasToken)!.priceUsd8) / 1e8;
     const v2Reserves = await readV2Reserves(rt.client, rt.pools, block);
 
     const evals: RouteEval[] = routes.map((route) => ({ route, block, sizes: [], outcome: "", qualifies: false }));
-    const full = exactL1 || routes.length <= this.cfg.fullQuoteTopRoutes;
+    const full = exactL1 || forceFull || routes.length <= this.cfg.fullQuoteTopRoutes;
     if (!full) await this.applyMarginalBound(rt, evals, market, v2Reserves, block);
 
     // Leg 1, deduplicated by (pool, tokenIn, amount).
@@ -453,12 +493,13 @@ export class Scanner extends EventEmitter {
 
     // Screening L1 fee: computed once per cycle from a representative route's real calldata
     // (all 2-leg routes encode to the same length); recomputed exactly for routes that matter.
-    let screeningL1: GasCost | undefined;
-    const sample = evals.find((e) => e.sizes.some((s) => s.leg2Out !== undefined));
+    let screeningL1: GasCost | undefined = cached?.screeningL1;
+    const sample = cached ? undefined : evals.find((e) => e.sizes.some((s) => s.leg2Out !== undefined));
     if (sample) {
       const s = sample.sizes.find((x) => x.leg2Out !== undefined)!;
       const data = encodeRun("run", sample.route.borrow, s.amount, this.legsFor(sample.route, s.leg1Out!, s.leg2Out!), 1n);
       screeningL1 = await estimateTxCost(rt.client, c, prices, SIM_RECEIVER, data, 0n, block);
+      if (rt.cache) rt.cache.screeningL1 = screeningL1;
     }
 
     for (const ev of evals) {
@@ -484,12 +525,16 @@ export class Scanner extends EventEmitter {
         size.l1Usd = (Number(l1Wei) / 1e18) * ethUsd;
         size.netTokensUsd = this.tokenUsd(rt, ev.route.borrow, size.netTokens, market);
         size.netUsd = size.netTokensUsd - size.gasUsd;
+        size.premiumUsd = this.tokenUsd(rt, ev.route.borrow, size.premium, market);
+        size.feeFreeNetUsd = size.netUsd + size.premiumUsd;
       }
       const quoted = ev.sizes.filter((s) => s.netUsd !== undefined);
       if (quoted.length) {
         ev.best = quoted.reduce((a, b) => (b.netUsd! > a.netUsd! ? b : a));
         if (exactL1) await this.exactCost(rt, ev, prices, block, ethUsd, market);
-        ev.qualifies = ev.best.netUsd! >= this.cfg.benchmarkNetUsd;
+        ev.qualifies = ev.best.netUsd! > this.cfg.minNetUsd;
+        ev.bestFeeFreeNetUsd = Math.max(...quoted.map((s) => s.feeFreeNetUsd!));
+        ev.feeFreeQualifies = ev.bestFeeFreeNetUsd > this.cfg.minNetUsd;
         ev.outcome = this.classify(ev.best);
       } else if (!ev.skip && !ev.pruned) {
         ev.skip = ev.sizes.map((s) => s.skip).find(Boolean) ?? "no size quoted";
@@ -563,6 +608,7 @@ export class Scanner extends EventEmitter {
     s.l1Usd = (Number(s.gas.l1CostWei) / 1e18) * ethUsd;
     s.netTokensUsd = this.tokenUsd(rt, ev.route.borrow, s.netTokens!, market);
     s.netUsd = s.netTokensUsd - s.gasUsd;
+    s.feeFreeNetUsd = s.netUsd + (s.premiumUsd ?? 0);
   }
 
   private classify(s: SizeEval): string {
@@ -571,7 +617,7 @@ export class Scanner extends EventEmitter {
     if (s.grossTokens! <= 0n) return "no spread: swap fees + price impact exceed the price gap";
     if (s.netTokens! <= 0n) return "spread smaller than the Aave premium";
     if (s.netUsd! <= 0) return "covers the premium but not gas";
-    if (s.netUsd! < this.cfg.benchmarkNetUsd) return "net positive but below the benchmark";
+    if (s.netUsd! <= this.cfg.minNetUsd) return "net positive but not above the minimum";
     return "qualifies";
   }
 
@@ -641,6 +687,12 @@ export class Scanner extends EventEmitter {
     const ranked = evals.filter((e) => e.best).sort((a, b) => b.best!.netUsd! - a.best!.netUsd!);
     rt.bestLastCycle = ranked[0];
     if (ranked[0] && (!rt.bestEver || ranked[0].best!.netUsd! > rt.bestEver.best!.netUsd!)) rt.bestEver = ranked[0];
+    for (const ev of ranked) {
+      if (ev.bestFeeFreeNetUsd !== undefined && (rt.bestFeeFreeUsd === undefined || ev.bestFeeFreeNetUsd > rt.bestFeeFreeUsd)) {
+        rt.bestFeeFreeUsd = ev.bestFeeFreeNetUsd;
+        rt.bestFeeFreeRoute = ev.route.id;
+      }
+    }
 
     const b = ranked[0];
     this.log(
@@ -651,36 +703,11 @@ export class Scanner extends EventEmitter {
     );
     this.emit("cycle", { chain: c.name, block: String(block), quoted: quotedRoutes, routes: evals.length, bestRoute: b?.route.id, bestNetUsd: b?.best?.netUsd });
 
-    // Opportunity episodes: repeated sightings of the same gap count once.
-    const qualifying = new Map<string, RouteEval>();
-    for (const ev of ranked) if (ev.qualifies && !qualifying.has(ev.route.gapKey)) qualifying.set(ev.route.gapKey, ev);
-    for (const ep of [...this.episodes.values()]) {
-      if (ep.chain === c.name && !qualifying.has(ep.gapKey)) this.closeEpisode(ep);
-    }
-    for (const [key, ev] of qualifying) {
-      const existing = this.episodes.get(key);
-      if (existing) {
-        existing.sightings++;
-        existing.lastSeen = new Date().toISOString();
-        existing.bestNetUsd = Math.max(existing.bestNetUsd, ev.best!.netUsd!);
-        continue;
-      }
-      const ep: Episode = {
-        gapKey: key,
-        chain: c.name,
-        firstSeen: new Date().toISOString(),
-        lastSeen: new Date().toISOString(),
-        firstBlock: String(block),
-        sightings: 1,
-        bestNetUsd: ev.best!.netUsd!,
-        routeId: ev.route.id,
-        open: true,
-      };
-      this.episodes.set(key, ep);
-      this.log("opportunity", `NEW ${ev.route.id} size $${ev.best!.sizeUsd} quoted net $${fmt(ev.best!.netUsd!)} @${block}`, c.name);
-      await this.freshCheck(rt, ev, ep, block);
-      this.emit("opportunity", ep);
-    }
+    // Hot set for per-block passes until the next sweep: the routes closest to break-even.
+    rt.hotRoutes = ranked.slice(0, this.cfg.hotRoutes).map((e) => e.route);
+    rt.lastHotBlock = block;
+
+    await this.processEpisodes(rt, evals, block);
 
     // Periodic evidence: simulate the chain's best route through the real receiver code even when
     // it loses on paper, to check quotes against execution and calibrate gas.
@@ -694,10 +721,110 @@ export class Scanner extends EventEmitter {
     }
   }
 
+  /**
+   * Opportunity episodes. Repeated sightings of the same price gap count once; an episode records
+   * the first and last block it was seen in, so per-block passes measure how long gaps stay open.
+   * "aave" episodes use the real premium and get a fresh re-quote and a simulation; "fee-free"
+   * episodes are the counterfactual without the premium and are only counted.
+   */
+  private async processEpisodes(rt: ChainRuntime, evals: RouteEval[], block: bigint) {
+    const c = rt.cfg;
+    const evaluated = new Set(evals.map((e) => e.route.gapKey));
+    for (const kind of ["aave", "fee-free"] as const) {
+      const value = (e: RouteEval) => (kind === "aave" ? e.best?.netUsd : e.bestFeeFreeNetUsd);
+      const qualifying = new Map<string, RouteEval>();
+      for (const ev of evals) {
+        const ok = kind === "aave" ? ev.qualifies : ev.feeFreeQualifies;
+        if (!ok) continue;
+        const prev = qualifying.get(ev.route.gapKey);
+        if (!prev || value(ev)! > value(prev)!) qualifying.set(ev.route.gapKey, ev);
+      }
+      for (const ep of [...this.episodes.values()]) {
+        if (ep.kind === kind && ep.chain === c.name && evaluated.has(ep.gapKey) && !qualifying.has(ep.gapKey)) this.closeEpisode(ep);
+      }
+      for (const [gapKey, ev] of qualifying) {
+        const key = `${kind}|${gapKey}`;
+        const existing = this.episodes.get(key);
+        if (existing) {
+          if (String(block) !== existing.lastBlock) existing.sightings++;
+          existing.lastSeen = new Date().toISOString();
+          existing.lastBlock = String(block);
+          existing.blocksOpen = Number(block - BigInt(existing.firstBlock)) + 1;
+          existing.bestNetUsd = Math.max(existing.bestNetUsd, value(ev)!);
+          continue;
+        }
+        const ep: Episode = {
+          kind,
+          gapKey,
+          chain: c.name,
+          firstSeen: new Date().toISOString(),
+          lastSeen: new Date().toISOString(),
+          firstBlock: String(block),
+          lastBlock: String(block),
+          blocksOpen: 1,
+          sightings: 1,
+          bestNetUsd: value(ev)!,
+          routeId: ev.route.id,
+          open: true,
+        };
+        this.episodes.set(key, ep);
+        if (kind === "aave") {
+          this.log("opportunity", `NEW ${ev.route.id} size $${ev.best!.sizeUsd} quoted net $${fmt(ev.best!.netUsd!, 4)} @${block}`, c.name);
+          await this.freshCheck(rt, ev, ep, block);
+        } else {
+          this.log("info", `fee-free counterfactual gap ${ev.route.id} net $${fmt(value(ev)!, 4)} without the Aave premium @${block}`, c.name);
+        }
+        this.emit("opportunity", ep);
+      }
+    }
+  }
+
+  /**
+   * Per-block passes between full sweeps: re-quote only the hot routes on every new block, as fast
+   * as the RPC allows, to catch short-lived gaps and measure how many blocks they last.
+   */
+  private async hotLoop(rt: ChainRuntime, until: number) {
+    while (this.running && Date.now() < until && rt.hotRoutes.length) {
+      const block = (await rt.client.getBlockNumber()) - 1n;
+      if (block <= rt.lastHotBlock) {
+        await new Promise((r) => setTimeout(r, 150));
+        continue;
+      }
+      const t0 = Date.now();
+      const { evals } = await this.evaluate(rt, rt.hotRoutes, block, false, true, true);
+      const ms = Date.now() - t0;
+      rt.hot.passes++;
+      rt.hot.ms += ms;
+      rt.hot.blocksSkipped += Number(block - rt.lastHotBlock - 1n);
+      rt.lastHotBlock = block;
+      rt.lastBlock = block;
+      for (const ev of evals) {
+        if (!ev.best) continue;
+        rt.hot.routeEvals++;
+        bump(rt.hot.outcomes, ev.outcome);
+        if (!rt.bestEver?.best || ev.best.netUsd! > rt.bestEver.best.netUsd!) rt.bestEver = ev;
+        if (ev.bestFeeFreeNetUsd !== undefined && (rt.bestFeeFreeUsd === undefined || ev.bestFeeFreeNetUsd > rt.bestFeeFreeUsd)) {
+          rt.bestFeeFreeUsd = ev.bestFeeFreeNetUsd;
+          rt.bestFeeFreeRoute = ev.route.id;
+        }
+      }
+      await this.processEpisodes(rt, evals, block);
+      if (rt.hot.passes % 25 === 0) {
+        this.log(
+          "info",
+          `per-block: ${rt.hot.passes} passes over ${rt.hotRoutes.length} hot routes, avg ${Math.round(rt.hot.ms / rt.hot.passes)} ms, ` +
+            `${rt.hot.blocksSkipped} blocks skipped while busy; best net seen $${fmt(rt.bestEver?.best?.netUsd ?? NaN, 4)}, ` +
+            `fee-free best $${fmt(rt.bestFeeFreeUsd ?? NaN, 4)}`,
+          rt.cfg.name,
+        );
+      }
+    }
+  }
+
   private closeEpisode(ep: Episode) {
     if (!ep.open) return;
     ep.open = false;
-    this.episodes.delete(ep.gapKey);
+    this.episodes.delete(`${ep.kind}|${ep.gapKey}`);
     this.closedEpisodes.push(ep);
     this.emit("episode_closed", ep);
   }
@@ -862,6 +989,16 @@ export class Scanner extends EventEmitter {
         boundViolations: rt.boundViolations,
         quotesDominated: rt.quotesDominated,
         quotesCannotFill: rt.quotesCannotFill,
+        perBlock: {
+          hotRoutes: rt.hotRoutes.map((r) => r.id),
+          passes: rt.hot.passes,
+          avgMs: rt.hot.passes ? Math.round(rt.hot.ms / rt.hot.passes) : null,
+          blocksSkipped: rt.hot.blocksSkipped,
+          routeEvaluations: rt.hot.routeEvals,
+          outcomes: Object.fromEntries([...rt.hot.outcomes].sort((a, b) => b[1] - a[1])),
+        },
+        bestFeeFreeUsd: rt.bestFeeFreeUsd ?? null,
+        bestFeeFreeRoute: rt.bestFeeFreeRoute ?? null,
         quotesOk: rt.quotesOk,
         quotesFailed: rt.quotesFailed,
         skipCounts: Object.fromEntries([...rt.skipCounts].sort((a, b) => b[1] - a[1])),
@@ -880,7 +1017,8 @@ export class Scanner extends EventEmitter {
       liveExecution: "disabled (not authorized; no wallet or key is loaded)",
       config: {
         loanSizesUsd: this.cfg.loanSizesUsd,
-        benchmarkNetUsd: this.cfg.benchmarkNetUsd,
+        minNetUsd: this.cfg.minNetUsd,
+        hotRoutes: this.cfg.hotRoutes,
         dailyTargetUsd: this.cfg.dailyTargetUsd,
         intervalSeconds: this.cfg.intervalSeconds,
         gasModel: this.cfg.gasModel,

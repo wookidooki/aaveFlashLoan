@@ -115,14 +115,16 @@ function render(s) {
   $("q-best-route").textContent = bestEver ? `${bestEver.routeId} · $${bestEver.best.sizeUsd.toLocaleString()}` : "";
 
   const eps = [...(s.openEpisodes || []), ...(s.closedEpisodes || [])];
-  $("opps").textContent = `${eps.length} / ${eps.filter((e) => e.freshQuote?.qualifies).length}`;
-  $("bench").textContent = s.config ? `benchmark ${usd(s.config.benchmarkNetUsd)} per trade · target ${usd(s.config.dailyTargetUsd)}/day` : "";
+  const aaveEps = eps.filter((e) => (e.kind ?? "aave") === "aave");
+  $("opps").textContent = `${aaveEps.length} / ${aaveEps.filter((e) => e.freshQuote?.qualifies).length}`;
+  const ffEps = eps.filter((e) => e.kind === "fee-free");
+  $("bench").textContent = s.config ? `qualifies above ${usd(s.config.minNetUsd)} net · fee-free counterfactual gaps: ${ffEps.length}` : "";
   const sims = s.simulations || [];
   $("sims").textContent = `${sims.filter((x) => x.ok).length} / ${sims.filter((x) => x.proceedsMatchQuote).length} / ${sims.length}`;
 
-  $("opptable").innerHTML = "<tr><th>Chain</th><th>Route</th><th>First seen</th><th>Sightings</th><th>Best quoted net</th><th>Fresh quote</th><th>Simulation</th><th>State</th></tr>" +
-    (eps.length ? eps.map((e) => `<tr><td>${esc(e.chain)}</td><td><code>${esc(e.routeId)}</code></td><td>${esc(e.firstSeen.slice(11, 19))}</td><td class="num">${e.sightings}</td><td class="num">${usd(e.bestNetUsd)}</td><td>${e.freshQuote ? `${usd(e.freshQuote.netUsd)} ${e.freshQuote.qualifies ? "✔ qualifies" : esc("(" + (e.freshQuote.note || "") + ")")}` : "–"}</td><td>${e.simulation ? esc(e.simulation.ok ? "executed" : e.simulation.reason) : "–"}</td><td>${e.open ? "open" : "closed"}</td></tr>`).join("")
-      : `<tr><td colspan="8" class="muted">None yet. A route is an opportunity when its quoted net reaches the benchmark; repeat sightings of the same price gap count once.</td></tr>`);
+  $("opptable").innerHTML = "<tr><th>Kind</th><th>Chain</th><th>Route</th><th>First seen</th><th>Blocks open</th><th>Best net</th><th>Fresh quote</th><th>Simulation</th><th>State</th></tr>" +
+    (eps.length ? eps.map((e) => `<tr><td>${esc(e.kind ?? "aave")}</td><td>${esc(e.chain)}</td><td><code>${esc(e.routeId)}</code></td><td>${esc(e.firstSeen.slice(11, 19))}</td><td class="num">${e.blocksOpen ?? e.sightings}</td><td class="num">${usd(e.bestNetUsd)}</td><td>${e.freshQuote ? `${usd(e.freshQuote.netUsd)} ${e.freshQuote.qualifies ? "✔ qualifies" : esc("(" + (e.freshQuote.note || "") + ")")}` : "–"}</td><td>${e.simulation ? esc(e.simulation.ok ? "executed" : e.simulation.reason) : "–"}</td><td>${e.open ? "open" : "closed"}</td></tr>`).join("")
+      : `<tr><td colspan="9" class="muted">None yet. An opportunity is a route with net above the minimum after all costs; repeat sightings of the same price gap count once. "fee-free" rows are the counterfactual without the Aave premium.</td></tr>`);
 
   $("best").innerHTML = chains.map(([n, c]) => {
     const e = c.bestLastCycle; if (!e?.best) return `<p><b>${esc(n)}</b> <span class="muted">no route quoted yet</span></p>`;

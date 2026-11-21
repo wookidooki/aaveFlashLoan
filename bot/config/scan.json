@@ -8,14 +8,15 @@
     20000,
     30000
   ],
-  "benchmarkNetUsd": 0.5,
+  "minNetUsd": 0,
   "dailyTargetUsd": 100,
-  "intervalSeconds": 20,
+  "intervalSeconds": 60,
   "maxRoundTripLossBps": 300,
   "poolRefreshMinutes": 30,
   "probeUsd": 5,
   "boundSlackBps": 20,
   "fullQuoteTopRoutes": 10,
+  "hotRoutes": 30,
   "bestRouteSimulationEveryCycles": 5,
   "gasModel": {
     "txBaseGas": 21000,

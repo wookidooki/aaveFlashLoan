@@ -50,7 +50,10 @@ export interface GasModelConfig {
 
 export interface ScanConfig {
   loanSizesUsd: number[];
-  benchmarkNetUsd: number;
+  /** a trade qualifies when its net after premium, gas and L1 fee is strictly above this (USD) */
+  minNetUsd: number;
+  /** routes closest to break-even that are re-quoted on every new block between full sweeps */
+  hotRoutes: number;
   dailyTargetUsd: number;
   intervalSeconds: number;
   maxRoundTripLossBps: number;
