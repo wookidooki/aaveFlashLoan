@@ -15,7 +15,8 @@
     "report": "node src/cli.ts report",
     "verify": "NODE_USE_ENV_PROXY=1 node src/cli.ts verify",
     "replay": "NODE_USE_ENV_PROXY=1 node src/cli.ts replay",
-    "competitors": "NODE_USE_ENV_PROXY=1 node src/cli.ts competitors"
+    "competitors": "NODE_USE_ENV_PROXY=1 node src/cli.ts competitors",
+    "paper": "NODE_USE_ENV_PROXY=1 node src/cli.ts paper"
   },
   "devDependencies": {
     "@nomicfoundation/hardhat-network-helpers": "3.0.12",

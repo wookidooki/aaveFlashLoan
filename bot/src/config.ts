@@ -58,6 +58,8 @@ export interface ScanConfig {
   hotRoutes: number;
   /** amount ladder (log-spaced, USD) quoted for every route whose best rate could beat break-even */
   sizeSearch: { minUsd: number; maxUsd: number; points: number };
+  /** paper trader: minimum local marginal edge before a route is quoted, and the sizes quoted */
+  paper: { minEdgeBps: number; sizesUsd: number[] };
   dailyTargetUsd: number;
   intervalSeconds: number;
   maxRoundTripLossBps: number;

@@ -19,6 +19,8 @@ export const MULTICALL3: Address = "0xcA11bde05977b3631167028862bE2a173976CA11";
 
 export function makeClient(chain: ChainConfig): PublicClient {
   return createPublicClient({
+    // viem caches eth_blockNumber for the polling interval (4 s) by default; block-by-block work needs it fresh.
+    cacheTime: 0,
     transport: fallback(
       chain.rpcUrls.map((url) => http(url, { timeout: 20_000, retryCount: 2, retryDelay: 400 })),
       { rank: false },

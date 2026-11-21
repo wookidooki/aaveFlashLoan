@@ -13,13 +13,13 @@ import type { Scanner } from "./scanner.ts";
 import type { PoolInfo } from "./venues.ts";
 
 const sig = (s: string) => keccak256(toHex(s));
-const SWAP_TOPICS: Hex[] = [
+export const SWAP_TOPICS: Hex[] = [
   sig("Swap(address,address,int256,int256,uint160,uint128,int24)"), // Uniswap v3 forks, Slipstream, Algebra
   sig("Swap(address,address,int256,int256,uint160,uint128,int24,uint128,uint128)"), // PancakeSwap v3
   sig("Swap(address,uint256,uint256,uint256,uint256,address)"), // Uniswap v2 style, Camelot v2
   sig("Swap(address,address,uint256,uint256,uint256,uint256)"), // Aerodrome / Velodrome v2
 ];
-const V4_SWAP = sig("Swap(bytes32,address,int128,int128,uint160,uint128,int24,uint24)");
+export const V4_SWAP = sig("Swap(bytes32,address,int128,int128,uint160,uint128,int24,uint24)");
 const TRANSFER = sig("Transfer(address,address,uint256)");
 
 export interface ArbTx {
@@ -71,7 +71,7 @@ const signed = (x: bigint, bits: number) => (x >= 1n << BigInt(bits - 1) ? x - (
  *  - v4: amount0, amount1 are the swapper's deltas; negative = paid in. Currency 0x0 is native ETH,
  *    whose logical token is the pool's WETH side.
  */
-function swapInput(l: Log, p: PoolInfo): Address | undefined {
+export function swapInput(l: Log, p: PoolInfo): Address | undefined {
   const data = l.data as Hex;
   if (l.topics[0] === V4_SWAP) {
     const a0 = signed(word(data, 0), 256);

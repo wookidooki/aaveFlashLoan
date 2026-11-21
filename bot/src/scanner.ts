@@ -105,7 +105,7 @@ export interface SimRecord {
   chain: string;
   routeId: string;
   block: string;
-  purpose: "qualifying-opportunity" | "best-route-evidence" | "venue-verification";
+  purpose: "qualifying-opportunity" | "best-route-evidence" | "venue-verification" | "paper-trade";
   sizeUsd: number;
   amount: string;
   quotedLeg2Out: string;
@@ -127,7 +127,7 @@ export interface LogLine {
   msg: string;
 }
 
-interface ChainRuntime {
+export interface ChainRuntime {
   cfg: ChainConfig;
   client: PublicClient;
   market?: AaveMarket;
@@ -416,6 +416,8 @@ export class Scanner extends EventEmitter {
     forceFull = false,
     /** per-block passes: reuse Aave state, gas prices and the screening L1 fee from the last sweep */
     useCached = false,
+    /** explicit loan sizes (USD) instead of the configured sizes and ladder */
+    sizesUsdOverride?: number[],
   ): Promise<{ evals: RouteEval[]; market: MarketState; prices: GasPrices }> {
     const c = rt.cfg;
     const gm = this.cfg.gasModel;
@@ -450,7 +452,7 @@ export class Scanner extends EventEmitter {
         continue;
       }
       if (ev.pruned) continue;
-      const sizesUsd = ev.sizeSearch ? [...new Set([...this.sizeGrid, ...this.cfg.loanSizesUsd])].sort((a, b) => a - b) : this.cfg.loanSizesUsd;
+      const sizesUsd = sizesUsdOverride ?? (ev.sizeSearch ? [...new Set([...this.sizeGrid, ...this.cfg.loanSizesUsd])].sort((a, b) => a - b) : this.cfg.loanSizesUsd);
       for (const usd of sizesUsd) {
         const amount = this.loanAmount(rt, ev.route.borrow, s!.priceUsd8, usd);
         const size: SizeEval = { sizeUsd: usd, amount, premium: aaveV3Premium(amount, market.premiumBps) };
@@ -1108,6 +1110,41 @@ export class Scanner extends EventEmitter {
       }
     }
     return rows.sort((a, b) => (a.block < b.block ? -1 : 1));
+  }
+
+  // ---------------------------------------------------------------- hooks for the paper trader
+
+  /** Initialised runtime for one chain (pools discovered, routes built, cache warmed). */
+  async runtime(chainName: string): Promise<ChainRuntime> {
+    const rt = this.chains.get(chainName);
+    if (!rt) throw new Error(`unknown chain ${chainName}`);
+    if (!rt.market) await this.init(rt);
+    const block = (await rt.client.getBlockNumber()) - 1n;
+    if (!rt.pools.length) await this.refreshPools(rt, block);
+    if (!rt.cache) await this.refreshCache(rt, block);
+    return rt;
+  }
+
+  /**
+   * Re-read lender state and gas prices used by per-block evaluations. The first call also computes
+   * the screening L1 fee by evaluating a few routes; later calls only re-read state (two reads).
+   */
+  async refreshCache(rt: ChainRuntime, block: bigint) {
+    if (!rt.cache?.screeningL1) {
+      await this.evaluate(rt, rt.routes.slice(0, Math.max(this.cfg.fullQuoteTopRoutes + 1, 20)), block);
+      return;
+    }
+    const assetList = [...new Set(Object.values(rt.cfg.assets))];
+    const [market, prices] = await Promise.all([
+      readMarketState(rt.client, rt.market!, assetList, block).then((m) => this.applyLender(rt, m, block)),
+      readGasPrices(rt.client, rt.cfg, block),
+    ]);
+    rt.cache = { market, prices, screeningL1: rt.cache.screeningL1 };
+  }
+
+  /** Run the route's best size through the receiver's simulate() at the state of `block`. */
+  async simulateAt(rt: ChainRuntime, ev: RouteEval, block: bigint, purpose: SimRecord["purpose"]): Promise<SimRecord> {
+    return this.simulate(rt, { ...ev, block }, purpose);
   }
 
   /** Discover (or reuse) the pool set for one chain, with token metadata and Aave prices. */

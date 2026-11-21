@@ -22,6 +22,18 @@
     "maxUsd": 1000,
     "points": 8
   },
+  "paper": {
+    "minEdgeBps": 0.5,
+    "sizesUsd": [
+      1,
+      5,
+      20,
+      75,
+      250,
+      1000,
+      5000
+    ]
+  },
   "bestRouteSimulationEveryCycles": 5,
   "gasModel": {
     "txBaseGas": 21000,

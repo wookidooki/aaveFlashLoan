@@ -66,6 +66,26 @@ if (command === "scan") {
   }
   console.log(rows.filter((r) => r.rec?.proceedsMatchQuote).length + "/" + rows.length + " venues verified; " + bad + " mismatches");
   process.exit(bad ? 1 : 0);
+} else if (command === "paper") {
+  // Paper trading: react to swaps block by block, decide, then judge each decision. Nothing is sent.
+  const { PaperTrader, paperMarkdown } = await import("./paper.ts");
+  const { writeFileSync, mkdirSync } = await import("node:fs");
+  const { DATA_DIR } = await import("./ledger.ts");
+  const cfg = loadConfig(values.config, chains ?? ["base"]);
+  const scanner = new Scanner(cfg);
+  const say = (m: string) => console.log(new Date().toISOString().slice(11, 19) + " " + m);
+  const traders = cfg.chains.map((c) => new PaperTrader(scanner, c.name, (m) => say(c.name.padEnd(9) + m)));
+  process.on("SIGINT", () => traders.forEach((t) => t.stop()));
+  const results = await Promise.all(traders.map((t) => t.run(Number(values.minutes ?? "30"))));
+  mkdirSync(DATA_DIR + "reports", { recursive: true });
+  for (const s of results) {
+    const md = paperMarkdown(s);
+    const file = DATA_DIR + "reports/paper-" + s.chain + "-" + s.startedAt.replace(/[:.]/g, "-") + ".md";
+    writeFileSync(file, md);
+    console.log(md.split("\n").slice(0, 14).join("\n"));
+    console.log("written " + file);
+  }
+  process.exit(0);
 } else if (command === "competitors") {
   // Who already runs these round trips, how often and for how much (read-only, recent blocks).
   const { analyseCompetitors, competitorMarkdown } = await import("./competitors.ts");
