@@ -40,6 +40,13 @@ export interface PaperDecision {
   /** paper P&L: simulated profit minus gas if the trade would have executed, else -gas if it would revert */
   paperPnlUsd?: number;
   competitor?: { block: string; index: number; tx: Hex; to: Address | null };
+  /**
+   * Counterfactual "instant" bot: the same trade landing in the block right after the state block.
+   * Simulated profit there (USD, before gas), and whether a competitor round trip took it in that block.
+   */
+  instantSimProfitUsd?: number;
+  instantReason?: string;
+  instantContested?: boolean;
 }
 
 export interface PaperSummary {
@@ -250,6 +257,18 @@ export class PaperTrader {
       d.simReason = sim.ok ? "executed" : sim.reason;
       d.paperPnlUsd = sim.ok ? d.simProfitUsd - d.gasUsd : -d.gasUsd;
       d.competitor = await this.findCompetitor(rt, ev.route, BigInt(d.stateBlock) + 1n, target);
+      // Speed upside: what an instant bot (landing in stateBlock + 1) would have got.
+      const state = BigInt(d.stateBlock);
+      if (target - 1n > state) {
+        const inst = await this.scanner.simulateAt(rt, ev, state, "paper-trade");
+        d.instantSimProfitUsd = inst.ok ? (Number(inst.simProfit) / 10 ** dec) * price : 0;
+        d.instantReason = inst.ok ? "executed" : inst.reason;
+        d.instantContested = d.competitor !== undefined && BigInt(d.competitor.block) === state + 1n;
+      } else {
+        d.instantSimProfitUsd = d.simProfitUsd;
+        d.instantReason = d.simReason;
+        d.instantContested = d.competitor !== undefined && BigInt(d.competitor.block) === target;
+      }
       const compBlock = d.competitor ? BigInt(d.competitor.block) : undefined;
       d.verdict =
         compBlock !== undefined && compBlock < target ? "lost" : compBlock === target ? "contested" : sim.ok && d.paperPnlUsd > 0 ? "won" : "gone";
@@ -328,6 +347,7 @@ export class PaperTrader {
 
 export function paperMarkdown(s: PaperSummary): string {
   const won = s.decisionsList.filter((d) => d.verdict === "won");
+  const instantPay = s.decisionsList.filter((d) => (d.instantSimProfitUsd ?? 0) - d.gasUsd > 0);
   const L = [
     `# Paper trading — ${s.chain}`,
     "",
@@ -343,6 +363,8 @@ export function paperMarkdown(s: PaperSummary): string {
     `| Verdicts | ${Object.entries(s.verdicts).map(([k, v]) => `${k} ${v}`).join(", ") || "none"} |`,
     `| Paper P&L (won trades' simulated profit minus gas; reverts cost gas) | $${s.paperPnlUsd.toFixed(4)} |`,
     `| Won trades: total simulated profit | $${won.reduce((a, d) => a + (d.simProfitUsd ?? 0), 0).toFixed(4)} |`,
+    `| If we had been instant (landing in the block right after the state block): trades still paying after gas / of which a competitor also hit that block | ${instantPay.length} / ${instantPay.filter((d) => d.instantContested).length} |`,
+    `| Instant-bot paper P&L (paying trades, uncontested only) | $${instantPay.filter((d) => !d.instantContested).reduce((a, d) => a + (d.instantSimProfitUsd! - d.gasUsd), 0).toFixed(4)} |`,
     "",
     "Verdicts: won = the trade still paid at the target block and no competitor took it earlier; contested = a competitor arbitraged the same pools in the target block (the priority fee decides); lost = a competitor took it before; gone = the gap closed without a visible competitor round trip.",
     "",
