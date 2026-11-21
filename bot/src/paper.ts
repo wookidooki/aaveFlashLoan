@@ -67,6 +67,7 @@ export interface PaperSummary {
   localQuoteExact: number;
   localQuoteMismatch: number;
   localQuoteUnavailable: number;
+  overlappingSkipped: number;
   localQuoteUnavailableWhy: Record<string, number>;
   decisions: number;
   verdicts: Record<string, number>;
@@ -78,7 +79,7 @@ export class PaperTrader {
   private stopped = false;
   private decisions: PaperDecision[] = [];
   private pending: Promise<void>[] = [];
-  private stats = { blocksSeen: 0, processed: 0, cycleMs: 0, changed: 0, affected: 0, candidates: 0, localChecks: 0, localViolations: 0, readMs: 0, quoteMs: 0, quoted: 0, localUnavailable: 0, localExact: 0, localMismatch: 0 };
+  private stats = { blocksSeen: 0, processed: 0, cycleMs: 0, changed: 0, affected: 0, candidates: 0, localChecks: 0, localViolations: 0, readMs: 0, quoteMs: 0, quoted: 0, localUnavailable: 0, localExact: 0, localMismatch: 0, overlapping: 0 };
   /** why exact local quotes were unavailable, by reason */
   readonly unavailableWhy = new Map<string, number>();
   readonly startedAt = new Date().toISOString();
@@ -240,7 +241,20 @@ export class PaperTrader {
           if (!cur || ev.best.netUsd! > cur.best!.netUsd!) byGap.set(ev.route.gapKey, ev);
         }
         const headNow = byGap.size ? await rt.client.getBlockNumber() : block;
-        for (const ev of byGap.values()) {
+        // Gaps sharing a pool interact (the first trade moves that pool's price for the rest), so
+        // per block take the best net first and skip any later route that touches a pool already used.
+        const usedPools = new Set<string>();
+        const chosen: RouteEval[] = [];
+        for (const ev of [...byGap.values()].sort((a, b) => b.best!.netUsd! - a.best!.netUsd!)) {
+          if (usedPools.has(ev.route.first.id) || usedPools.has(ev.route.second.id)) {
+            this.stats.overlapping++;
+            continue;
+          }
+          usedPools.add(ev.route.first.id);
+          usedPools.add(ev.route.second.id);
+          chosen.push(ev);
+        }
+        for (const ev of chosen) {
           const d: PaperDecision = {
             id: this.decisions.length + 1,
             chain: this.chain,
@@ -387,6 +401,7 @@ export class PaperTrader {
       localQuoteExact: this.stats.localExact,
       localQuoteMismatch: this.stats.localMismatch,
       localQuoteUnavailable: this.stats.localUnavailable,
+      overlappingSkipped: this.stats.overlapping,
       localQuoteUnavailableWhy: Object.fromEntries([...this.unavailableWhy].sort((a, b) => b[1] - a[1]).slice(0, 8)),
       decisions: this.decisions.length,
       verdicts,
@@ -412,6 +427,7 @@ export function paperMarkdown(s: PaperSummary): string {
     `| Local marginal model checked against real quotes: checks / violations | ${s.localBoundChecks} / ${s.localBoundViolations} |`,
     `| Decisions priced locally: simulated proceeds exactly equal to the local quote / different | ${s.localQuoteExact} / ${s.localQuoteMismatch} |`,
     `| Size quotes with no exact local answer (skipped, never sent to the RPC) | ${s.localQuoteUnavailable}${Object.keys(s.localQuoteUnavailableWhy).length ? ": " + Object.entries(s.localQuoteUnavailableWhy).map(([k, n]) => `${k} (${n})`).join("; ") : ""} |`,
+    `| Paying routes skipped because a better decision in the same block already used one of their pools | ${s.overlappingSkipped} |`,
     `| Decisions (would have sent) | ${s.decisions} |`,
     `| Verdicts | ${Object.entries(s.verdicts).map(([k, v]) => `${k} ${v}`).join(", ") || "none"} |`,
     `| Paper P&L (won trades' simulated profit minus gas; reverts cost gas) | $${s.paperPnlUsd.toFixed(4)} |`,
