@@ -54,6 +54,8 @@ export interface ScanConfig {
   minNetUsd: number;
   /** routes closest to break-even that are re-quoted on every new block between full sweeps */
   hotRoutes: number;
+  /** amount ladder (log-spaced, USD) quoted for every route whose best rate could beat break-even */
+  sizeSearch: { minUsd: number; maxUsd: number; points: number };
   dailyTargetUsd: number;
   intervalSeconds: number;
   maxRoundTripLossBps: number;

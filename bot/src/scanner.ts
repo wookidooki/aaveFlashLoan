@@ -74,6 +74,10 @@ export interface RouteEval {
   marginalProduct?: number;
   /** not quoted at full sizes because the marginal-price bound cannot cover the premium */
   pruned?: boolean;
+  /** the route's best rate could beat break-even, so the $min-$max amount ladder was quoted */
+  sizeSearch?: boolean;
+  /** best (net before gas, after premium) / loan over quoted sizes, in bps */
+  edgeBps?: number;
   skip?: string;
 }
 
@@ -153,6 +157,14 @@ interface ChainRuntime {
   hot: { passes: number; ms: number; blocksSkipped: number; routeEvals: number; outcomes: Map<string, number> };
   bestFeeFreeUsd?: number;
   bestFeeFreeRoute?: string;
+  /** best marginal edge seen: (best-rate round trip - 1 - premium) in bps; > 0 means some amount profits before gas */
+  bestEdgeBps?: number;
+  bestEdgeRoute?: string;
+  lastCycleBestEdgeBps?: number;
+  /** route evaluations that ran the amount search */
+  sizeSearches: number;
+  /** largest observed (actual round-trip rate / marginal-rate bound - 1), bps; must stay below boundSlackBps */
+  boundMaxExcessBps?: number;
   quotesOk: number;
   quotesFailed: number;
   skipCounts: Map<string, number>;
@@ -205,6 +217,7 @@ export class Scanner extends EventEmitter {
         hotRoutes: [],
         lastHotBlock: 0n,
         hot: { passes: 0, ms: 0, blocksSkipped: 0, routeEvals: 0, outcomes: new Map() },
+        sizeSearches: 0,
         quotesOk: 0,
         quotesFailed: 0,
         skipCounts: new Map(),
@@ -417,7 +430,10 @@ export class Scanner extends EventEmitter {
 
     const evals: RouteEval[] = routes.map((route) => ({ route, block, sizes: [], outcome: "", qualifies: false }));
     const full = exactL1 || forceFull || routes.length <= this.cfg.fullQuoteTopRoutes;
-    if (!full) await this.applyMarginalBound(rt, evals, market, v2Reserves, block);
+    // Marginal rates are always measured: they decide which routes get the $min-$max size search.
+    // Sweeps prune routes that cannot cover the premium at any size (top routes exempt); per-block
+    // passes skip every route that cannot be profitable at any size even without the premium.
+    await this.applyMarginalBound(rt, evals, market, v2Reserves, block, useCached ? "hot" : full ? "none" : "sweep");
 
     // Leg 1, deduplicated by (pool, tokenIn, amount).
     const leg1Reqs: QuoteRequest[] = [];
@@ -430,7 +446,8 @@ export class Scanner extends EventEmitter {
         continue;
       }
       if (ev.pruned) continue;
-      for (const usd of this.cfg.loanSizesUsd) {
+      const sizesUsd = ev.sizeSearch ? [...new Set([...this.sizeGrid, ...this.cfg.loanSizesUsd])].sort((a, b) => a - b) : this.cfg.loanSizesUsd;
+      for (const usd of sizesUsd) {
         const amount = this.loanAmount(rt, ev.route.borrow, s!.priceUsd8, usd);
         const size: SizeEval = { sizeUsd: usd, amount, premium: aaveV3Premium(amount, market.premiumBps) };
         ev.sizes.push(size);
@@ -531,6 +548,9 @@ export class Scanner extends EventEmitter {
       const quoted = ev.sizes.filter((s) => s.netUsd !== undefined);
       if (quoted.length) {
         ev.best = quoted.reduce((a, b) => (b.netUsd! > a.netUsd! ? b : a));
+        // Edge in bps of the loan, after premium and before gas, at the route's best amount: the
+        // size-independent measure of how close a losing route is to break-even.
+        ev.edgeBps = Math.max(...quoted.map((s) => (s.netTokensUsd! / s.sizeUsd) * 1e4));
         if (exactL1) await this.exactCost(rt, ev, prices, block, ethUsd, market);
         ev.qualifies = ev.best.netUsd! > this.cfg.minNetUsd;
         ev.bestFeeFreeNetUsd = Math.max(...quoted.map((s) => s.feeFreeNetUsd!));
@@ -552,7 +572,14 @@ export class Scanner extends EventEmitter {
    * as pruned instead of being quoted at every size. Routes near break-even, routes without a probe,
    * and the top fullQuoteTopRoutes routes by bound are always quoted in full.
    */
-  private async applyMarginalBound(rt: ChainRuntime, evals: RouteEval[], market: MarketState, v2Reserves: Map<Address, [bigint, bigint]>, block: bigint) {
+  private async applyMarginalBound(
+    rt: ChainRuntime,
+    evals: RouteEval[],
+    market: MarketState,
+    v2Reserves: Map<Address, [bigint, bigint]>,
+    block: bigint,
+    mode: "sweep" | "hot" | "none",
+  ) {
     const reqs: QuoteRequest[] = [];
     const index = new Map<string, number>();
     for (const ev of evals) {
@@ -582,6 +609,32 @@ export class Scanner extends EventEmitter {
     }
     const needed = 1 + Number(market.premiumBps) / 1e4;
     const slack = 1 + this.cfg.boundSlackBps / 1e4;
+    // Size search: any route whose best (smallest-size) rate could beat break-even with the Aave
+    // premium gets the full $min-$max amount ladder; for every other route no amount can work.
+    for (const ev of evals) {
+      if (ev.marginalProduct === undefined) {
+        ev.sizeSearch = true; // no probe: cannot rule anything out, so search
+        continue;
+      }
+      ev.sizeSearch = ev.marginalProduct * slack >= needed;
+      const edgeBps = (ev.marginalProduct - needed) * 1e4;
+      if (rt.bestEdgeBps === undefined || edgeBps > rt.bestEdgeBps) {
+        rt.bestEdgeBps = edgeBps;
+        rt.bestEdgeRoute = ev.route.id;
+      }
+      rt.lastCycleBestEdgeBps = Math.max(rt.lastCycleBestEdgeBps ?? -Infinity, edgeBps);
+      if (ev.sizeSearch) rt.sizeSearches++;
+    }
+    if (mode === "none") return;
+    if (mode === "hot") {
+      for (const ev of evals) {
+        if (ev.marginalProduct !== undefined && !ev.sizeSearch) {
+          ev.pruned = true;
+          ev.outcome = "pruned: no amount from $min to $max can cover the Aave premium (marginal rate)";
+        }
+      }
+      return;
+    }
     const top = new Set(
       evals
         .filter((e) => e.marginalProduct !== undefined)
@@ -589,12 +642,20 @@ export class Scanner extends EventEmitter {
         .slice(0, this.cfg.fullQuoteTopRoutes),
     );
     for (const ev of evals) {
-      if (ev.marginalProduct === undefined || top.has(ev)) continue;
+      if (ev.marginalProduct === undefined || top.has(ev) || ev.sizeSearch) continue;
       if (ev.marginalProduct * slack < needed) {
         ev.pruned = true;
         ev.outcome = "pruned: marginal prices cannot cover the Aave premium at any size";
       }
     }
+  }
+
+  /** Log-spaced loan sizes from sizeSearch.minUsd to sizeSearch.maxUsd (USD, 2 decimals). */
+  get sizeGrid(): number[] {
+    const { minUsd, maxUsd, points } = this.cfg.sizeSearch;
+    const out: number[] = [];
+    for (let k = 0; k < points; k++) out.push(Math.round(minUsd * (maxUsd / minUsd) ** (k / (points - 1)) * 100) / 100);
+    return [...new Set(out)];
   }
 
   /** Recompute the best size's cost with the exact L1 fee for that route's calldata. */
@@ -632,6 +693,7 @@ export class Scanner extends EventEmitter {
 
     const t0 = Date.now();
     const rejBefore = rpcRejections.count;
+    rt.lastCycleBestEdgeBps = undefined;
     const { evals } = await this.evaluate(rt, rt.routes, block);
     if (rpcRejections.count > rejBefore) {
       const n = rpcRejections.count - rejBefore;
@@ -657,6 +719,7 @@ export class Scanner extends EventEmitter {
           if (s.leg2Out === undefined) continue;
           rt.boundChecks++;
           const actual = Number(s.leg2Out) / Number(s.amount);
+          rt.boundMaxExcessBps = Math.max(rt.boundMaxExcessBps ?? -Infinity, (actual / ev.marginalProduct - 1) * 1e4);
           if (actual > ev.marginalProduct * (1 + this.cfg.boundSlackBps / 1e4)) {
             rt.boundViolations++;
             this.log("warn", `bound violated on ${ev.route.id} $${s.sizeUsd}: actual rate ${actual} > bound ${ev.marginalProduct}`, c.name);
@@ -679,14 +742,14 @@ export class Scanner extends EventEmitter {
         rt.routesQuotedEver.add(ev.route.id);
         bump(rt.outcomeCounts, ev.outcome);
         const prev = rt.topRoutes.get(ev.route.id);
-        if (!prev || ev.best.netUsd! > prev.best!.netUsd!) rt.topRoutes.set(ev.route.id, ev);
+        if (better(ev, prev)) rt.topRoutes.set(ev.route.id, ev);
       }
     }
     rt.routesQuotedLastCycle = quotedRoutes;
     rt.routesPrunedLastCycle = prunedRoutes;
-    const ranked = evals.filter((e) => e.best).sort((a, b) => b.best!.netUsd! - a.best!.netUsd!);
+    const ranked = evals.filter((e) => e.best).sort(compareRoutes);
     rt.bestLastCycle = ranked[0];
-    if (ranked[0] && (!rt.bestEver || ranked[0].best!.netUsd! > rt.bestEver.best!.netUsd!)) rt.bestEver = ranked[0];
+    if (ranked[0] && better(ranked[0], rt.bestEver)) rt.bestEver = ranked[0];
     for (const ev of ranked) {
       if (ev.bestFeeFreeNetUsd !== undefined && (rt.bestFeeFreeUsd === undefined || ev.bestFeeFreeNetUsd > rt.bestFeeFreeUsd)) {
         rt.bestFeeFreeUsd = ev.bestFeeFreeNetUsd;
@@ -697,14 +760,25 @@ export class Scanner extends EventEmitter {
     const b = ranked[0];
     this.log(
       "info",
-      `block ${block}: ${evals.length} routes, ${quotedRoutes} fully quoted, ${prunedRoutes} pruned by marginal-price bound, in ${Date.now() - t0} ms; ` +
-        (b ? `best ${b.route.id} $${b.best!.sizeUsd} net $${fmt(b.best!.netUsd!)} (${b.outcome})` : "no route quoted"),
+      `block ${block}: ${evals.length} routes, ${quotedRoutes} fully quoted, ${prunedRoutes} pruned by marginal-price bound, ` +
+        `${evals.filter((e) => e.sizeSearch && !e.skip).length} searched $${this.cfg.sizeSearch.minUsd}-$${this.cfg.sizeSearch.maxUsd}, ` +
+        `closest edge at best amount ${fmt(rt.lastCycleBestEdgeBps ?? NaN, 1)} bps vs Aave break-even, in ${Date.now() - t0} ms; ` +
+        (b
+          ? (b.best!.netUsd! > 0
+              ? `best ${b.route.id} $${b.best!.sizeUsd} net $${fmt(b.best!.netUsd!, 4)}`
+              : `closest ${b.route.id}: ${fmt(b.edgeBps ?? NaN, 2)} bps before gas at its best amount`) + ` (${b.outcome})`
+          : "no route quoted"),
       c.name,
     );
     this.emit("cycle", { chain: c.name, block: String(block), quoted: quotedRoutes, routes: evals.length, bestRoute: b?.route.id, bestNetUsd: b?.best?.netUsd });
 
     // Hot set for per-block passes until the next sweep: the routes closest to break-even.
-    rt.hotRoutes = ranked.slice(0, this.cfg.hotRoutes).map((e) => e.route);
+    // Ranked by best (smallest-size) rate, i.e. the routes nearest to profitable at some amount.
+    rt.hotRoutes = evals
+      .filter((e) => e.marginalProduct !== undefined && !e.skip)
+      .sort((a, b) => b.marginalProduct! - a.marginalProduct!)
+      .slice(0, this.cfg.hotRoutes)
+      .map((e) => e.route);
     rt.lastHotBlock = block;
 
     await this.processEpisodes(rt, evals, block);
@@ -802,7 +876,7 @@ export class Scanner extends EventEmitter {
         if (!ev.best) continue;
         rt.hot.routeEvals++;
         bump(rt.hot.outcomes, ev.outcome);
-        if (!rt.bestEver?.best || ev.best.netUsd! > rt.bestEver.best.netUsd!) rt.bestEver = ev;
+        if (better(ev, rt.bestEver)) rt.bestEver = ev;
         if (ev.bestFeeFreeNetUsd !== undefined && (rt.bestFeeFreeUsd === undefined || ev.bestFeeFreeNetUsd > rt.bestFeeFreeUsd)) {
           rt.bestFeeFreeUsd = ev.bestFeeFreeNetUsd;
           rt.bestFeeFreeRoute = ev.route.id;
@@ -813,7 +887,7 @@ export class Scanner extends EventEmitter {
         this.log(
           "info",
           `per-block: ${rt.hot.passes} passes over ${rt.hotRoutes.length} hot routes, avg ${Math.round(rt.hot.ms / rt.hot.passes)} ms, ` +
-            `${rt.hot.blocksSkipped} blocks skipped while busy; best net seen $${fmt(rt.bestEver?.best?.netUsd ?? NaN, 4)}, ` +
+            `${rt.hot.blocksSkipped} blocks skipped while busy; best edge ever ${fmt(rt.bestEdgeBps ?? NaN, 1)} bps; best net seen $${fmt(rt.bestEver?.best?.netUsd ?? NaN, 4)}, ` +
             `fee-free best $${fmt(rt.bestFeeFreeUsd ?? NaN, 4)}`,
           rt.cfg.name,
         );
@@ -1007,7 +1081,7 @@ export class Scanner extends EventEmitter {
   summary() {
     const chains: Record<string, unknown> = {};
     for (const [name, rt] of this.chains) {
-      const top = [...rt.topRoutes.values()].sort((a, b) => b.best!.netUsd! - a.best!.netUsd!).slice(0, 10);
+      const top = [...rt.topRoutes.values()].sort(compareRoutes).slice(0, 10);
       chains[name] = {
         chainId: rt.cfg.chainId,
         cycles: rt.cycles,
@@ -1038,6 +1112,10 @@ export class Scanner extends EventEmitter {
         },
         bestFeeFreeUsd: rt.bestFeeFreeUsd ?? null,
         bestFeeFreeRoute: rt.bestFeeFreeRoute ?? null,
+        bestEdgeBps: rt.bestEdgeBps ?? null,
+        bestEdgeRoute: rt.bestEdgeRoute ?? null,
+        sizeSearches: rt.sizeSearches,
+        boundMaxExcessBps: rt.boundMaxExcessBps ?? null,
         quotesOk: rt.quotesOk,
         quotesFailed: rt.quotesFailed,
         skipCounts: Object.fromEntries([...rt.skipCounts].sort((a, b) => b[1] - a[1])),
@@ -1078,6 +1156,22 @@ export class Scanner extends EventEmitter {
  * exact input (re-running those through the injected quoter shows a partial fill).
  */
 const LIQUIDITY_LIMITED = /NotEnoughLiquidity|did not fill the exact input|needs more than \d+M gas|Unexpected error/;
+
+/**
+ * Route ranking: routes with positive net rank by net USD (more profit first); losing routes rank
+ * by edge in bps at their best amount, since their dollar loss is smallest at the smallest size and
+ * says nothing about how close they came.
+ */
+function compareRoutes(a: RouteEval, b: RouteEval): number {
+  const pa = a.best!.netUsd! > 0;
+  const pb = b.best!.netUsd! > 0;
+  if (pa || pb) return pa && pb ? b.best!.netUsd! - a.best!.netUsd! : pa ? -1 : 1;
+  return (b.edgeBps ?? -Infinity) - (a.edgeBps ?? -Infinity);
+}
+
+function better(a: RouteEval, b: RouteEval | undefined): boolean {
+  return !b?.best || compareRoutes(a, b) < 0;
+}
 
 /** Collapse amounts in a reason so identical causes aggregate; keeps pool labels like "uniswap-v3:500". */
 function normalizeReason(r: string): string {

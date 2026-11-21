@@ -17,6 +17,11 @@
   "boundSlackBps": 20,
   "fullQuoteTopRoutes": 10,
   "hotRoutes": 30,
+  "sizeSearch": {
+    "minUsd": 1,
+    "maxUsd": 1000,
+    "points": 8
+  },
   "bestRouteSimulationEveryCycles": 5,
   "gasModel": {
     "txBaseGas": 21000,
