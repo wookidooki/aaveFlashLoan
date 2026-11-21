@@ -66,6 +66,27 @@ if (command === "scan") {
   }
   console.log(rows.filter((r) => r.rec?.proceedsMatchQuote).length + "/" + rows.length + " venues verified; " + bad + " mismatches");
   process.exit(bad ? 1 : 0);
+} else if (command === "competitors") {
+  // Who already runs these round trips, how often and for how much (read-only, recent blocks).
+  const { analyseCompetitors, competitorMarkdown } = await import("./competitors.ts");
+  const { writeFileSync, mkdirSync } = await import("node:fs");
+  const { DATA_DIR } = await import("./ledger.ts");
+  const cfg = loadConfig(values.config, chains);
+  const scanner = new Scanner(cfg);
+  const minutes = Number(values.minutes ?? "60");
+  const parts = ["# Competitor analysis", "", "Arbitrage round trips by other bots through the pools this scanner watches. Profit = net token inflow to the sender and target contract (Aave oracle prices) minus gas incl. L1 fee.", ""];
+  for (const c of cfg.chains) {
+    const r = await analyseCompetitors(scanner, c.name, minutes);
+    const { symbols } = await scanner.poolsFor(c.name);
+    const md = competitorMarkdown(r, symbols);
+    console.log(md);
+    parts.push(md);
+  }
+  mkdirSync(DATA_DIR + "reports", { recursive: true });
+  const file = DATA_DIR + "reports/competitors-" + new Date().toISOString().replace(/[:.]/g, "-") + ".md";
+  writeFileSync(file, parts.join("\n"));
+  console.log("written " + file);
+  process.exit(0);
 } else if (command === "replay") {
   // Measure how many blocks each opportunity of a session was really open (historical eth_call).
   const { readFileSync, writeFileSync, mkdirSync } = await import("node:fs");

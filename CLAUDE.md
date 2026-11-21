@@ -36,6 +36,7 @@ npm run typecheck      # build + tsc --noEmit
 npm run scan -- --minutes 10 --chains arbitrum,base   # read-only: eth_call only, no transactions
 npm run verify         # read-only: simulate one live route through every venue; proceeds must equal quotes
 npm run replay -- --session ID   # read-only: re-quote each opportunity block by block to measure its lifetime
+npm run competitors -- --minutes 60   # read-only: other bots' round trips through watched pools, profit and timing
 npm run dashboard      # operator view at http://127.0.0.1:8787 (read-only)
 npm run report -- --date YYYY-MM-DD                   # writes data/reports/
 ```

@@ -1076,6 +1076,17 @@ export class Scanner extends EventEmitter {
     return rows.sort((a, b) => (a.block < b.block ? -1 : 1));
   }
 
+  /** Discover (or reuse) the pool set for one chain, with token metadata and Aave prices. */
+  async poolsFor(chainName: string) {
+    const rt = this.chains.get(chainName);
+    if (!rt) throw new Error(`unknown chain ${chainName}`);
+    if (!rt.market) await this.init(rt);
+    const block = (await rt.client.getBlockNumber()) - 1n;
+    if (!rt.pools.length) await this.refreshPools(rt, block);
+    const market = await readMarketState(rt.client, rt.market!, [...new Set(Object.values(rt.cfg.assets))], block);
+    return { client: rt.client, pools: rt.pools, decimals: rt.decimals, symbols: rt.symbols, market, block, cfg: rt.cfg };
+  }
+
   // ---------------------------------------------------------------- reporting
 
   summary() {
